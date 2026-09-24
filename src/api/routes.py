@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, Re
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
-from src.api import admin_auth, visitor
+from src.api import admin_auth, ui_config, visitor
 from src.api.schemas import (
     CollectionRenameRequest,
     CollectionsResponse,
@@ -37,6 +37,8 @@ from src.api.schemas import (
     QueryCancelRequest,
     QueryRequest,
     StatusResponse,
+    UIConfigRequest,
+    UIConfigResponse,
 )
 from src.config import settings
 from src.imports.store import (
@@ -338,6 +340,16 @@ async def status(request: Request, response: Response):
         points_count=info["points_count"],
         status=str(info["status"]),
     )
+
+
+@router.get("/ui/config", response_model=UIConfigResponse)
+async def ui_config_get():
+    return UIConfigResponse(**ui_config.load())
+
+
+@router.post("/ui/config", response_model=UIConfigResponse)
+async def ui_config_set(req: UIConfigRequest, _admin: None = Depends(require_admin)):
+    return UIConfigResponse(**ui_config.save(req.model_dump()))
 
 
 @router.get("/config", response_model=ConfigResponse)

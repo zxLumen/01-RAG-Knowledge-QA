@@ -35,6 +35,7 @@
     --input-border: #475569;
 
     --modal-bg: rgba(15, 23, 42, 0.72);
+    --modal-solid: #0f172a;
     --modal-border: rgba(51, 65, 85, 0.6);
 
     --badge-bg: rgba(148, 163, 184, 0.10);
@@ -155,6 +156,7 @@ html[data-theme="light"] {
     --input-bg: rgba(255, 255, 255, 0.65);
     --input-border: #cbd5e1;
     --modal-bg: rgba(255, 255, 255, 0.88);
+    --modal-solid: #ffffff;
     --modal-border: rgba(15, 23, 42, 0.12);
     --badge-bg: rgba(15, 23, 42, 0.05);
     --badge-border: rgba(15, 23, 42, 0.10);

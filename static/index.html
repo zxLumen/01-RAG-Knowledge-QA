@@ -724,21 +724,26 @@
             <!-- 主题配置 -->
             <div class="glass-card rounded-2xl p-6">
                 <h2 class="text-lg font-semibold mb-1">主题配置</h2>
-                <p class="text-xs text-gray-400 mb-4">选择界面配色主题（保存在本机浏览器）。</p>
-                <div class="flex flex-wrap gap-3">
-                    <template x-for="t in themeOptions" :key="t.id">
-                        <button type="button"
-                            @click="theme = t.id; applyTheme()"
-                            :title="t.name"
-                            :class="theme === t.id ? 'theme-swatch on' : 'theme-swatch'"
-                            :style="'background:' + t.grad">
-                            <span class="tick" x-show="theme === t.id">✓</span>
-                        </button>
+                <p class="text-xs text-gray-400 mb-4">勾选要开放给访客的主题，并用 ↑↓ 调整显示顺序；「默认」用于首次访问。</p>
+                <div class="space-y-2">
+                    <template x-for="(t, i) in uiConfig.themes" :key="t">
+                        <div class="flex items-center gap-3 border border-gray-700/50 rounded-xl px-4 py-2">
+                            <input type="checkbox" :checked="themeEnabled[t]" @change="toggleTheme(t, $event.target.checked)">
+                            <span class="theme-swatch" :style="'background:' + gradFor(t)"></span>
+                            <span class="flex-1 text-sm" x-text="nameFor(t)"></span>
+                            <span x-show="uiConfig.default_theme === t" class="badge-dim text-xs">默认</span>
+                            <button type="button" @click="setDefaultTheme(t)" class="text-xs px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200">设为默认</button>
+                            <button type="button" @click="moveTheme(i, -1)" :disabled="i === 0" class="dd-rename disabled:opacity-30" title="上移">↑</button>
+                            <button type="button" @click="moveTheme(i, 1)" :disabled="i === uiConfig.themes.length - 1" class="dd-rename disabled:opacity-30" title="下移">↓</button>
+                        </div>
                     </template>
                 </div>
-                <div class="mt-3 text-xs text-gray-400">
-                    当前：<span class="text-strong" x-text="(themeOptions.find(t => t.id === theme) || {}).name || theme"></span>
+                <div class="flex items-center gap-3 mt-4">
+                    <button @click="saveUiConfig()" :disabled="uiBusy"
+                            class="btn-send disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-medium">保存主题配置</button>
+                    <p x-show="uiMsg" class="text-xs" :class="uiOk ? 'text-green-400' : 'text-red-400'" x-text="uiMsg"></p>
                 </div>
+                <p x-show="!uiConfig.themes.some(t => themeEnabled[t])" class="text-xs text-amber-300/80 mt-2">至少勾选一个主题后保存。</p>
             </div>
             </div>
         </div>
@@ -941,6 +946,11 @@ function app() {
             { id: 'amber', name: '暖橙', grad: 'linear-gradient(135deg,#f59e0b,#f43f5e)' },
             { id: 'light', name: '明亮', grad: 'linear-gradient(135deg,#0f172a 35%,#f8fafc 90%)' },
         ],
+        uiConfig: { themes: ['default', 'purple', 'emerald', 'amber', 'light'], default_theme: 'default' },
+        themeEnabled: { default: true, purple: true, emerald: true, amber: true, light: true },
+        uiBusy: false,
+        uiMsg: '',
+        uiOk: true,
         activeTab: ['chat', 'ingest', 'manage', 'models', 'status', 'imports'].includes(savedTab) ? savedTab : 'chat',
         tabs: (() => {
             const def = ['chat', 'ingest', 'manage', 'models', 'status', 'imports'];
@@ -1063,7 +1073,7 @@ function app() {
             await this.loadCollections();
             this.ensureChat();
             this.restoreFsExpand();
-            await Promise.all([this.loadStatus(), this.loadConfig(), this.loadLLMConfig(), this.loadProviders(), this.loadFiles(), this.loadImports()]);
+            await Promise.all([this.loadStatus(), this.loadConfig(), this.loadLLMConfig(), this.loadProviders(), this.loadFiles(), this.loadImports(), this.loadUiConfig()]);
             await this.resumeIngestIfRunning();
             if (this.restoringImport) {
                 await this.viewSession(sid);
@@ -1969,6 +1979,84 @@ function app() {
 
         get visibleTabs() {
             return this.tabs;
+        },
+
+        get visibleThemeOptions() {
+            const allowed = this.uiConfig.themes || [];
+            return allowed.map((id) => this.themeOptions.find((t) => t.id === id)).filter(Boolean);
+        },
+
+        nameFor(id) {
+            const t = this.themeOptions.find((x) => x.id === id);
+            return t ? t.name : id;
+        },
+
+        gradFor(id) {
+            const t = this.themeOptions.find((x) => x.id === id);
+            return t ? t.grad : '';
+        },
+
+        async loadUiConfig() {
+            try {
+                const res = await fetch('/api/ui/config');
+                if (res.ok) {
+                    const data = await res.json();
+                    this.uiConfig = { themes: data.themes || [], default_theme: data.default_theme || '' };
+                    const en = {};
+                    (data.themes || []).forEach((t) => { en[t] = true; });
+                    this.themeEnabled = en;
+                    if (!this.uiConfig.themes.includes(this.theme)) {
+                        this.theme = this.uiConfig.default_theme || this.uiConfig.themes[0] || 'default';
+                        this.applyTheme();
+                    }
+                }
+            } catch (e) {}
+        },
+
+        toggleTheme(id, on) {
+            this.themeEnabled = { ...this.themeEnabled, [id]: on };
+        },
+
+        moveTheme(i, delta) {
+            const arr = this.uiConfig.themes.slice();
+            const j = i + delta;
+            if (j < 0 || j >= arr.length) return;
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+            this.uiConfig = { ...this.uiConfig, themes: arr };
+        },
+
+        setDefaultTheme(id) {
+            this.uiConfig = { ...this.uiConfig, default_theme: id };
+        },
+
+        async saveUiConfig() {
+            this.uiMsg = '';
+            const themes = this.uiConfig.themes.filter((t) => this.themeEnabled[t]);
+            if (!themes.length) { this.uiOk = false; this.uiMsg = '至少勾选一个主题'; return; }
+            const defaultTheme = themes.includes(this.uiConfig.default_theme) ? this.uiConfig.default_theme : themes[0];
+            this.uiBusy = true;
+            try {
+                const res = await fetch('/api/ui/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+                    body: JSON.stringify({ themes, default_theme: defaultTheme }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) { this.uiOk = false; this.uiMsg = data.detail || '保存失败'; return; }
+                this.uiConfig = { themes: data.themes || [], default_theme: data.default_theme || '' };
+                const en = {};
+                (data.themes || []).forEach((t) => { en[t] = true; });
+                this.themeEnabled = en;
+                if (!this.uiConfig.themes.includes(this.theme)) {
+                    this.theme = this.uiConfig.default_theme || 'default';
+                    this.applyTheme();
+                }
+                this.uiOk = true; this.uiMsg = '已保存';
+            } catch (e) {
+                this.uiOk = false; this.uiMsg = '请求失败: ' + e.message;
+            } finally {
+                this.uiBusy = false;
+            }
         },
 
         providerPreset(id) {

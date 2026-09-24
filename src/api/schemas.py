@@ -197,6 +197,16 @@ class PasswordChangeRequest(BaseModel):
     new_password: str
 
 
+class UIConfigRequest(BaseModel):
+    themes: list[str]
+    default_theme: str
+
+
+class UIConfigResponse(BaseModel):
+    themes: list[str]
+    default_theme: str
+
+
 class CollectionsResponse(BaseModel):
     current: str
     collections: list[str]
