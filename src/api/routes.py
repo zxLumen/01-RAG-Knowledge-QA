@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, Re
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
-from src.api import visitor
+from src.api import admin_auth, visitor
 from src.api.schemas import (
     CollectionRenameRequest,
     CollectionsResponse,
@@ -32,6 +32,7 @@ from src.api.schemas import (
     ModelInfo,
     ModelSelectRequest,
     ModelsResponse,
+    PasswordChangeRequest,
     ProvidersResponse,
     QueryCancelRequest,
     QueryRequest,
@@ -76,14 +77,13 @@ def require_admin(
     x_admin_token: Optional[str] = Header(None),
     authorization: Optional[str] = Header(None),
 ) -> None:
-    """Guard write operations when ADMIN_TOKEN is configured."""
-    expected = settings.admin_token
-    if not expected:
+    """Guard write operations when an admin password is configured."""
+    if not admin_auth.password_set():
         return
     provided = x_admin_token or ""
     if not provided and authorization and authorization.lower().startswith("bearer "):
         provided = authorization[7:].strip()
-    if provided != expected:
+    if not admin_auth.verify(provided):
         raise HTTPException(status_code=401, detail="需要管理员令牌（ADMIN_TOKEN）")
 
 
@@ -110,8 +110,19 @@ def resolve_visitor(request: Request, response: Response) -> str:
 
 @router.post("/admin/verify")
 async def admin_verify(_admin: None = Depends(require_admin)):
-    if not settings.admin_token:
+    if not admin_auth.password_set():
         raise HTTPException(status_code=400, detail="服务端未设置 ADMIN_TOKEN")
+    return {"ok": True}
+
+
+@router.post("/admin/password")
+async def admin_change_password(
+    req: PasswordChangeRequest, _admin: None = Depends(require_admin)
+):
+    try:
+        admin_auth.change_password(req.old_password, req.new_password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     return {"ok": True}
 
 
@@ -152,16 +163,15 @@ def _visitor_roots(visitor_id: str) -> list[Path]:
 
 
 def _is_admin(request: Request) -> bool:
-    """True when a valid ADMIN_TOKEN is presented (and one is configured)."""
-    expected = settings.admin_token
-    if not expected:
+    """True when a valid admin password is presented (and one is configured)."""
+    if not admin_auth.password_set():
         return False
     provided = request.headers.get("x-admin-token", "")
     if not provided:
         auth = request.headers.get("authorization", "")
         if auth.lower().startswith("bearer "):
             provided = auth[7:].strip()
-    return provided == expected
+    return admin_auth.verify(provided)
 
 
 def visitor_collection(request: Request, response: Response) -> str | None:

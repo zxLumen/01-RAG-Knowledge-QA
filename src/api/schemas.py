@@ -192,6 +192,11 @@ class CollectionRenameRequest(BaseModel):
     new_name: str
 
 
+class PasswordChangeRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+
 class CollectionsResponse(BaseModel):
     current: str
     collections: list[str]

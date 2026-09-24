@@ -91,7 +91,7 @@ python3 -m pip install -e ".[dev]"
 | `EMBEDDING_API_KEY` | 空 | 嵌入 Key |
 | `EMBEDDING_MODEL` | `DENSE_EMBEDDING_MODEL` | 嵌入模型 |
 | `EMBEDDING_DIM` | `1024` | 向量维度（换模型若维度变化需重建索引） |
-| `ADMIN_TOKEN` | 空 | 设置后，`/api/llm/*` 写操作需携带 `X-Admin-Token` |
+| `ADMIN_TOKEN` | 空 | 管理员初始密码；设置后写操作（模型配置、集合变更）需携带 `X-Admin-Token`。可在「管理面板」内改密码，改后以 `qdrant_data/admin.json`（哈希）为准 |
 | `RATE_LIMIT_PER_MINUTE` | `0` | 每 IP 每分钟 `/api/query` 次数上限（0=不限） |
 | `DEMO_MODE` | `false` | 开启访客隔离与上传（公开 demo 用） |
 
@@ -121,7 +121,7 @@ nohup /usr/bin/python3 run_server.py > /tmp/rag_server.log 2>&1 &
 - **💬 对话**：提问 → 流式回答，来源为 `[文件名]`；左侧会话多开、可重命名、拖拽排序
 - **📥 导入**：选择目录/文件导入；同文件重复导入自动跳过；打开「重建」可全量重建当前集合
 - **📖 知识库管理**：文件列表、集合（切换/重命名/删除）、向量点数；**访客为只读**（集合由系统分配）
-- **🤖 模型**：多厂商配置档案的新建/编辑/删除/激活；嵌入模型配置；管理令牌（**仅管理员可见**）
+- **🔑 管理面板**：登录后为多厂商配置档案的新建/编辑/删除/激活、嵌入模型配置；含「修改密码」
 - **📊 状态**：集合、点数与模型信息
 - **📚 导入记录**：历史导入会话详情
 
@@ -129,7 +129,7 @@ nohup /usr/bin/python3 run_server.py > /tmp/rag_server.log 2>&1 &
 
 ### 模型管理与 API 调用
 
-- 进入「🤖 模型」页新建档案：选厂商（自动带出 `base_url`）、填名称/Key/模型/温度
+- 进入「🔑 管理面板」新建档案：选厂商（自动带出 `base_url`）、填名称/Key/模型/温度
 - **模型列表按用途分流**：对话档案只列对话模型、嵌入档案只列嵌入模型；点「获取模型列表」时会实际请求，成功填充、失败（如缺 Key/认证失败）才在红字显示原因；`custom` 自定义厂商手填模型名
 - 「名称」留空自动取「厂商 + 模型」（编辑时留空保持原名）；「温度」为采样随机性（知识库问答建议 0）
 - **对话模型**与**嵌入模型**各自是多档案：可新建多个、点「启用」切换当前使用项
@@ -185,7 +185,7 @@ nohup /usr/bin/python3 run_server.py > /tmp/rag_server.log 2>&1 &
 服务器上通常没有本地 Ollama，建议全部走云端 API（OpenAI 兼容）：
 
 ```bash
-# 例：嵌入用硅基流动 bge-m3，对话用 DeepSeek；写操作加管理令牌
+# 例：嵌入用硅基流动 bge-m3，对话用 DeepSeek；写操作需管理员密码
 export EMBEDDING_PROVIDER=openai
 export EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1
 export EMBEDDING_MODEL=Pro/BAAI/bge-m3        # 或免费版 BAAI/bge-m3
@@ -199,7 +199,7 @@ export RATE_LIMIT_PER_MINUTE=20
 /usr/bin/python3 run_server.py
 ```
 
-- **密钥**：仅通过环境变量或本地 `qdrant_data/llm_config.json`（`.gitignore` 已忽略）保存，接口一律脱敏返回；也可在页面「管理令牌」处控制写权限
+- **密钥**：仅通过环境变量或本地 `qdrant_data/llm_config.json`（`.gitignore` 已忽略）保存，接口一律脱敏返回；也可在管理面板登录后控制写权限
 - **嵌入切换**：换模型/维度后需重新导入（导入页「重建」），否则检索维度不匹配
 - **并发**：本地 Qdrant `path=` 模式适合单实例 demo；高并发可改用 Qdrant server 模式
 - 提示：DeepSeek 等对话 API **没有 embeddings 接口**，嵌入需另选厂商（OpenAI / 智谱 / 通义 / 硅基流动等）
@@ -225,13 +225,14 @@ export RATE_LIMIT_PER_MINUTE=20
 
 演示模式默认所有请求都按访客隔离。要切到管理员视角（查看共享知识库与全部文件）：
 
-1. 服务端设置 `ADMIN_TOKEN` 启动：`ADMIN_TOKEN=your-secret DEMO_MODE=true /usr/bin/python3 run_server.py`
-2. 前端**右上角 🔑** 填入该 token 登录（`POST /api/admin/verify` 校验）；也可在「🤖 模型」页底部「管理令牌」操作
+1. 服务端设置 `ADMIN_TOKEN` 启动（作为初始密码）：`ADMIN_TOKEN=your-secret DEMO_MODE=true /usr/bin/python3 run_server.py`
+2. 打开「🔑 管理面板」Tab：未登录显示登录页，输入密码（`POST /api/admin/verify` 校验）；登录后即为模型/嵌入配置页
 3. 之后请求自动带 `X-Admin-Token`，后端识别为管理员：`/api/status`、`/api/files`、`/api/query`、`/api/imports` 等都返回共享/管理员数据；点右上角 ⏻「退出管理员」恢复访客视角
 
-> 该 token 用于保护 `/api/llm/*` 写操作与集合变更（`/api/collections/switch|rename|delete`）。未设置 `ADMIN_TOKEN` 时无法进入管理员视角。
+> **修改密码**：管理面板内「修改密码」卡片（`POST /api/admin/password`），改后存于 `qdrant_data/admin.json`（PBKDF2 哈希，文件优先于 `ADMIN_TOKEN`）。删除该文件即回退到环境变量密码。
+> 该密码用于保护模型配置写操作与集合变更（`/api/collections/switch|rename|delete`）。未设置时无法进入管理员视角。
 > **访客上传**走自己的隔离目录，无需管理员令牌（演示模式即可用）。
-> 「🤖 模型」页仅管理员可见：非管理员打开该页会显示登录框。访客提问/记录始终走自己的集合，客户端传来的集合名会被忽略；集合切换/重命名/删除对访客一律拒绝（403），知识库管理页为只读。
+> 「🔑 管理面板」对所有人可见，但未登录只显示登录页。访客提问/记录始终走自己的集合，客户端传来的集合名会被忽略；集合切换/重命名/删除对访客一律拒绝（403），知识库管理页为只读。
 
 ## 数据与存储
 

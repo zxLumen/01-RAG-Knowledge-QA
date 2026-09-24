@@ -695,11 +695,30 @@
                 </div>
             </div>
 
-            <!-- 管理令牌 -->
+            <!-- 管理员状态 -->
             <div class="glass-card rounded-2xl p-6">
                 <h2 class="text-lg font-semibold mb-1">管理员状态</h2>
                 <p class="text-xs text-gray-400 mb-3">当前已登录管理员视角（可见共享知识库与全部文件，可配置模型）。</p>
                 <button x-show="isAdmin" @click="exitAdmin()" class="btn-ghost text-amber-300 px-4 py-2 rounded-lg text-sm">退出管理员</button>
+            </div>
+
+            <!-- 修改密码 -->
+            <div class="glass-card rounded-2xl p-6">
+                <h2 class="text-lg font-semibold mb-1">修改密码</h2>
+                <p class="text-xs text-gray-400 mb-3">修改后立即生效并保存到本地（下次登录用新密码）。</p>
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
+                    <input x-model="pwdForm.old" type="password" placeholder="原密码"
+                           class="input-field rounded-lg px-3 py-2 text-sm font-mono">
+                    <input x-model="pwdForm.next" type="password" placeholder="新密码（至少 4 位）"
+                           class="input-field rounded-lg px-3 py-2 text-sm font-mono">
+                    <input x-model="pwdForm.confirm" type="password" placeholder="确认新密码"
+                           class="input-field rounded-lg px-3 py-2 text-sm font-mono"
+                           @keydown.enter="changePassword()">
+                </div>
+                <button @click="changePassword()" :disabled="pwdForm.busy"
+                        class="btn-send disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-medium">更新密码</button>
+                <p x-show="pwdForm.msg" class="text-xs mt-2"
+                   :class="pwdForm.ok ? 'text-green-400' : 'text-red-400'" x-text="pwdForm.msg"></p>
             </div>
             </div>
         </div>
@@ -997,6 +1016,7 @@ function app() {
         adminToken: (() => { try { return localStorage.getItem('ragAdminToken') || ''; } catch (e) { return ''; } })(),
         isAdmin: false,
         adminMsg: '',
+        pwdForm: { old: '', next: '', confirm: '', busy: false, msg: '', ok: true },
         modelForm: { open: false, id: '', name: '', provider: 'ollama', base_url: '', api_key: '', model: '', temperature: 0, has_key: false, key_hint: '', modelOptions: [], modelFilter: '' },
         embedForm: { open: false, id: '', name: '', provider: 'ollama', base_url: '', api_key: '', model: '', dim: 1024, has_key: false, key_hint: '', modelOptions: [], modelFilter: '' },
         modelMsg: { ok: true, text: '' },
@@ -1056,6 +1076,32 @@ function app() {
             this.activeTab = tab;
             if (tab === 'imports') this.loadImports();
             if (tab === 'models') { this.loadLLMConfig(); this.loadProviders(); }
+        },
+
+        async changePassword() {
+            const f = this.pwdForm;
+            f.msg = '';
+            if (!f.old || !f.next) { f.ok = false; f.msg = '请填写原密码与新密码'; return; }
+            if (f.next.length < 4) { f.ok = false; f.msg = '新密码至少 4 位'; return; }
+            if (f.next !== f.confirm) { f.ok = false; f.msg = '两次输入的新密码不一致'; return; }
+            f.busy = true;
+            try {
+                const res = await fetch('/api/admin/password', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+                    body: JSON.stringify({ old_password: f.old, new_password: f.next }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) { f.ok = false; f.msg = data.detail || '修改失败'; return; }
+                this.adminToken = f.next;
+                try { localStorage.setItem('ragAdminToken', f.next); } catch (e) {}
+                f.ok = true; f.msg = '密码已更新';
+                f.old = f.next = f.confirm = '';
+            } catch (e) {
+                f.ok = false; f.msg = '请求失败: ' + e.message;
+            } finally {
+                f.busy = false;
+            }
         },
 
         async verifyStoredAdmin() {
@@ -1252,7 +1298,7 @@ function app() {
             try {
                 const res = await fetch('/api/collections/switch', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
                     body: JSON.stringify({ name }),
                 });
                 if (!res.ok) {
@@ -1323,7 +1369,7 @@ function app() {
             try {
                 const res = await fetch('/api/collections/delete', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
                     body: JSON.stringify({ name }),
                 });
                 if (!res.ok) {
@@ -1355,7 +1401,7 @@ function app() {
             try {
                 const res = await fetch('/api/collections/rename', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
                     body: JSON.stringify({ name: oldName, new_name: newName }),
                 });
                 if (!res.ok) {
@@ -2156,7 +2202,7 @@ function app() {
         },
 
         async reloadData() {
-            await Promise.all([this.loadStatus(), this.loadFiles(), this.loadImports()]);
+            await Promise.all([this.loadCollections(), this.loadStatus(), this.loadFiles(), this.loadImports()]);
         },
 
         async loadImports() {
