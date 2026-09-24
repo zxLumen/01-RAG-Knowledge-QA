@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
@@ -7,6 +8,8 @@ from src.config import settings
 from src.vectorstore.context import current_collection
 from src.vectorstore.embedder import get_dense_embeddings
 from src.vectorstore.store import get_client
+
+logger = logging.getLogger("rag")
 
 
 @dataclass
@@ -145,7 +148,7 @@ def search(
                     })
                     seen_ids.add(point.id)
         except Exception:
-            pass
+            logger.exception("keyword recall failed (collection=%s)", collection)
 
     items: list[dict] = _select_final_chunks(dense_items, top_k, chunks_per_file)
 

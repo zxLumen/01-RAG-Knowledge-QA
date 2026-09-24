@@ -144,13 +144,27 @@ def _visitor_roots(visitor_id: str) -> list[Path]:
     return roots
 
 
+def _is_admin(request: Request) -> bool:
+    """True when a valid ADMIN_TOKEN is presented (and one is configured)."""
+    expected = settings.admin_token
+    if not expected:
+        return False
+    provided = request.headers.get("x-admin-token", "")
+    if not provided:
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            provided = auth[7:].strip()
+    return provided == expected
+
+
 def visitor_collection(request: Request, response: Response) -> str | None:
     """Effective collection for this request.
 
     Returns the visitor's dedicated collection in demo mode, otherwise None
-    (meaning the admin/default collection).
+    (meaning the admin/default collection). A valid admin token bypasses visitor
+    scoping so the operator can see the shared/admin knowledge bases.
     """
-    if not settings.demo_mode:
+    if not settings.demo_mode or _is_admin(request):
         return None
     vid = resolve_visitor(request, response)
     return visitor.collection_name(vid)
@@ -199,7 +213,7 @@ async def ingest(req: IngestRequest, request: Request, response: Response):
         for_ingest = list(dict.fromkeys(req.paths))
     else:
         for_ingest = [req.path]
-    if settings.demo_mode:
+    if settings.demo_mode and not _is_admin(request):
         vid = resolve_visitor(request, response)
         allowed = _visitor_roots(vid)
         clean = []
@@ -221,8 +235,7 @@ async def ingest(req: IngestRequest, request: Request, response: Response):
             recreate=req.recreate,
             delete_missing=req.delete_missing,
             progress=ingest_progress.set_phase,
-            collection=visitor.collection_name(resolve_visitor(request, response))
-            if settings.demo_mode else None,
+            collection=visitor_collection(request, response),
         )
     except Exception as exc:
         cancelled = ingest_progress.is_cancelled()
@@ -489,7 +502,7 @@ async def select_model(req: ModelSelectRequest):
 async def list_files(request: Request, response: Response):
     cwd = Path.cwd().resolve()
     collection = visitor_collection(request, response)
-    if settings.demo_mode:
+    if settings.demo_mode and not _is_admin(request):
         roots = _visitor_roots(
             request.cookies.get(visitor.VISITOR_COOKIE, "")
         )
@@ -556,7 +569,7 @@ async def list_files(request: Request, response: Response):
 async def file_content(rel: str, request: Request, response: Response):
     cwd = Path.cwd().resolve()
     target = (cwd / rel).resolve()
-    if settings.demo_mode:
+    if settings.demo_mode and not _is_admin(request):
         vid = request.cookies.get(visitor.VISITOR_COOKIE, "")
         roots = _visitor_roots(vid)
     else:
@@ -629,7 +642,7 @@ async def upload(
 
 @router.get("/collections", response_model=CollectionsResponse)
 async def collections(request: Request, response: Response):
-    if settings.demo_mode:
+    if settings.demo_mode and not _is_admin(request):
         resolve_visitor(request, response)
         return CollectionsResponse(current="我的知识库", collections=["我的知识库"])
     return CollectionsResponse(
@@ -690,7 +703,7 @@ async def list_imports(
     limit: int = 100,
     collection: Optional[str] = None,
 ):
-    if settings.demo_mode and not collection:
+    if settings.demo_mode and not collection and not _is_admin(request):
         vid = request.cookies.get(visitor.VISITOR_COOKIE, "")
         collection = visitor.collection_name(vid) if visitor.is_valid_id(vid) else ""
     else:

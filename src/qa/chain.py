@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 
 from src.config import settings
 from src.qa import cancel, llm
 from src.qa.llm_config import get_active
 from src.retrieval.hybrid import RetrievedChunk, search
+
+logger = logging.getLogger("rag")
 
 SYSTEM_PROMPT = """你是一个知识库问答助手。基于以下检索到的文档片段回答用户问题。
 
@@ -93,10 +96,11 @@ def answer_question_stream(
         chunks = search(
             question, top_k=top_k or settings.top_k, collection_name=collection_name
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - surfaced to the client below
+        logger.exception("retrieval failed (collection=%s)", collection_name)
         yield {
             "type": "done",
-            "answer": "检索失败：无法连接嵌入服务或向量库，请检查模型配置。",
+            "answer": f"检索失败：{exc}",
             "sources": [],
             "chunks_used": 0,
             "retrieved": [],

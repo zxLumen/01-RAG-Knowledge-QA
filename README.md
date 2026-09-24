@@ -221,6 +221,16 @@ export RATE_LIMIT_PER_MINUTE=20
 - 超过 7 天未访问的访客会被惰性清理（删集合 + 目录）；全局超 2G 时从最旧访客开始回收
 - 访客集合名为 `visitor_<id>`（每人一个），记录在 `qdrant_data/visitors.json`
 
+### 管理员视角（演示模式下）
+
+演示模式默认所有请求都按访客隔离。要切到管理员视角（查看共享知识库与全部文件）：
+
+1. 服务端设置 `ADMIN_TOKEN` 启动：`ADMIN_TOKEN=your-secret DEMO_MODE=true /usr/bin/python3 run_server.py`
+2. 前端「🤖 模型」页底部「管理令牌」填入该 token，点「进入管理员视角」
+3. 之后请求自动带 `X-Admin-Token`，后端识别为管理员：`/api/status`、`/api/files`、`/api/query`、`/api/imports` 等都返回共享/管理员数据；点「退出管理员」恢复访客视角
+
+> 该 token 同时用于保护 `/api/llm/*` 写操作与 `/api/upload`。未设置 `ADMIN_TOKEN` 时无法进入管理员视角。
+
 ## 数据与存储
 
 - `data/`：源文档（支持 `.md` / `.txt` / `.pdf`），导入时按目录递归发现

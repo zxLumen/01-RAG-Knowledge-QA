@@ -43,6 +43,7 @@ def _record_session(
         embedding_model=get_embedding().get('model') or settings.dense_embedding_model,
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
+        collection=current_collection(),
     )
 
 
@@ -154,7 +155,7 @@ def _ingest_paths(
     existing = (
         {}
         if recreate
-        else latest_md5_by_rel_path()
+        else latest_md5_by_rel_path(current_collection())
     )
     existing_md5 = {k: v.get("file_md5") for k, v in existing.items()}
 
@@ -198,6 +199,7 @@ def _ingest_paths(
                 embedding_model=get_embedding().get('model') or settings.dense_embedding_model,
                 chunk_size=settings.chunk_size,
                 chunk_overlap=settings.chunk_overlap,
+                collection=current_collection(),
             )
             add_files(session_id, files)
             return {
@@ -348,6 +350,7 @@ def _ingest_paths(
         embedding_model=get_embedding().get('model') or settings.dense_embedding_model,
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
+        collection=current_collection(),
     )
     add_files(session_id, files)
 
