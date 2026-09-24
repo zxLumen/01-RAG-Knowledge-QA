@@ -291,20 +291,6 @@ input[type="checkbox"]:checked::after {
     backdrop-filter: blur(12px);
 }
 
-.admin-pop {
-    position: absolute;
-    top: calc(100% + 8px);
-    right: 0;
-    z-index: 60;
-    width: 20rem;
-    background: var(--modal-bg);
-    border: 1px solid var(--modal-border);
-    border-radius: 12px;
-    box-shadow: 0 14px 40px var(--glass-shadow);
-    backdrop-filter: blur(12px);
-    padding: 12px;
-}
-
 .app-logo {
     background: linear-gradient(135deg, var(--accent-1), var(--accent-2));
     box-shadow: 0 4px 14px var(--accent-soft);
