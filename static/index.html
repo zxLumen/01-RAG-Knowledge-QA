@@ -720,6 +720,26 @@
                 <p x-show="pwdForm.msg" class="text-xs mt-2"
                    :class="pwdForm.ok ? 'text-green-400' : 'text-red-400'" x-text="pwdForm.msg"></p>
             </div>
+
+            <!-- 主题配置 -->
+            <div class="glass-card rounded-2xl p-6">
+                <h2 class="text-lg font-semibold mb-1">主题配置</h2>
+                <p class="text-xs text-gray-400 mb-4">选择界面配色主题（保存在本机浏览器）。</p>
+                <div class="flex flex-wrap gap-3">
+                    <template x-for="t in themeOptions" :key="t.id">
+                        <button type="button"
+                            @click="theme = t.id; applyTheme()"
+                            :title="t.name"
+                            :class="theme === t.id ? 'theme-swatch on' : 'theme-swatch'"
+                            :style="'background:' + t.grad">
+                            <span class="tick" x-show="theme === t.id">✓</span>
+                        </button>
+                    </template>
+                </div>
+                <div class="mt-3 text-xs text-gray-400">
+                    当前：<span class="text-strong" x-text="(themeOptions.find(t => t.id === theme) || {}).name || theme"></span>
+                </div>
+            </div>
             </div>
         </div>
     </div>

@@ -74,3 +74,21 @@ def test_delete_alias(tmp_path, monkeypatch):
     naming.delete_alias(storage)
     assert naming.display_name(storage) == storage
     assert naming.storage_for_display("猫") == "猫"
+
+
+def test_creation_order_newest_first(tmp_path, monkeypatch):
+    monkeypatch.setattr(naming, "_ORDER_FILE", tmp_path / "order.json")
+    naming.record_creation("a")
+    naming.record_creation("b")
+    naming.record_creation("c")
+    naming.record_creation("b")  # idempotent, keeps original position
+    assert naming.order_index() == {"a": 0, "b": 1, "c": 2}
+
+
+def test_drop_creation(tmp_path, monkeypatch):
+    monkeypatch.setattr(naming, "_ORDER_FILE", tmp_path / "order.json")
+    naming.record_creation("a")
+    naming.record_creation("b")
+    naming.drop_creation("a")
+    assert naming.order_index() == {"b": 0}
+

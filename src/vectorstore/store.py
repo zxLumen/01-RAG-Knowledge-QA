@@ -9,7 +9,13 @@ from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, V
 from src.config import settings
 from src.qa.llm_config import embedding_dim
 from src.vectorstore.context import current_collection
-from src.vectorstore.naming import register_alias, storage_name
+from src.vectorstore.naming import (
+    drop_creation,
+    order_index,
+    record_creation,
+    register_alias,
+    storage_name,
+)
 
 _client: QdrantClient | None = None
 _write_lock = threading.RLock()
@@ -29,15 +35,26 @@ def get_client() -> QdrantClient:
 
 
 def list_collections(client: QdrantClient) -> list[str]:
+    """All collections, newest-created first (unknown ones alphabetically last).
+
+    Qdrant does not expose creation timestamps, so we keep a creation-order
+    registry in ``data/collection_order.json``.
+    """
     try:
-        return sorted(c.name for c in client.get_collections().collections)
+        names = [c.name for c in client.get_collections().collections]
     except Exception:
         return []
+    idx = order_index()
+    known = [n for n in names if n in idx]
+    unknown = sorted(n for n in names if n not in idx)
+    known.sort(key=lambda n: idx[n], reverse=True)
+    return known + unknown
 
 
 def delete_collection(client: QdrantClient, name: str) -> None:
     with _write_lock:
         client.delete_collection(name)
+        drop_creation(name)
 
 
 def set_active_collection(client: QdrantClient, name: str) -> None:
@@ -51,6 +68,7 @@ def set_active_collection(client: QdrantClient, name: str) -> None:
     with _write_lock:
         storage = storage_name(name)
         register_alias(name, storage)
+        record_creation(storage)
         settings.qdrant_collection = storage
         ensure_collection(client, recreate=False)
 
@@ -66,8 +84,10 @@ def ensure_collection_unlocked(client: QdrantClient, recreate: bool = False) -> 
         if recreate:
             client.delete_collection(name)
         else:
+            record_creation(name)
             return
 
+    record_creation(name)
     client.create_collection(
         collection_name=name,
         vectors_config={

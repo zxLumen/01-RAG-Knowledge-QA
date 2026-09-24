@@ -6,6 +6,7 @@ import re
 from pathlib import Path
 
 _ALIAS_FILE = Path("data/collection_aliases.json")
+_ORDER_FILE = Path("data/collection_order.json")
 _STORAGE_RE = re.compile(r"^[A-Za-z0-9_-]{1,63}$")
 
 
@@ -87,3 +88,41 @@ def delete_alias(storage: str) -> None:
     kept = {d: s for d, s in aliases.items() if s != storage}
     if len(kept) != len(aliases):
         _save_aliases(kept)
+
+
+def _load_order() -> list[str]:
+    try:
+        data = json.loads(_ORDER_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    return [s for s in data if isinstance(s, str)] if isinstance(data, list) else []
+
+
+def _save_order(order: list[str]) -> None:
+    _ORDER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _ORDER_FILE.write_text(
+        json.dumps(order, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def record_creation(storage: str) -> None:
+    """Remember a collection's creation order (append only once)."""
+    order = _load_order()
+    if storage in order:
+        return
+    order.append(storage)
+    _save_order(order)
+
+
+def drop_creation(storage: str) -> None:
+    """Forget a deleted collection so it does not linger in the ordering."""
+    order = _load_order()
+    kept = [s for s in order if s != storage]
+    if len(kept) != len(order):
+        _save_order(kept)
+
+
+def order_index() -> dict[str, int]:
+    """Map storage name -> position in creation order."""
+    return {s: i for i, s in enumerate(_load_order())}
+
