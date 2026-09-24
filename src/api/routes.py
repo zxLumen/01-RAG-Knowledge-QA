@@ -108,6 +108,13 @@ def resolve_visitor(request: Request, response: Response) -> str:
     return vid
 
 
+@router.post("/admin/verify")
+async def admin_verify(_admin: None = Depends(require_admin)):
+    if not settings.admin_token:
+        raise HTTPException(status_code=400, detail="服务端未设置 ADMIN_TOKEN")
+    return {"ok": True}
+
+
 _rate_lock = threading.Lock()
 _rate_hits: dict[str, list[float]] = {}
 
@@ -177,10 +184,14 @@ async def query(
     response: Response,
     _rate: None = Depends(enforce_rate_limit),
 ):
-    if req.collection:
+    visitor_scope = visitor_collection(request, response)
+    if visitor_scope:
+        # Visitor: always their own collection; ignore any client-supplied name.
+        collection = visitor_scope
+    elif req.collection:
         collection = storage_for_display(req.collection)
     else:
-        collection = visitor_collection(request, response) or settings.qdrant_collection
+        collection = settings.qdrant_collection
 
     def event_stream():
         for event in answer_question_stream(
@@ -703,7 +714,8 @@ async def list_imports(
     limit: int = 100,
     collection: Optional[str] = None,
 ):
-    if settings.demo_mode and not collection and not _is_admin(request):
+    if settings.demo_mode and not _is_admin(request):
+        # Visitor: always their own collection; ignore any client-supplied name.
         vid = request.cookies.get(visitor.VISITOR_COOKIE, "")
         collection = visitor.collection_name(vid) if visitor.is_valid_id(vid) else ""
     else:

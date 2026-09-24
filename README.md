@@ -230,6 +230,7 @@ export RATE_LIMIT_PER_MINUTE=20
 3. 之后请求自动带 `X-Admin-Token`，后端识别为管理员：`/api/status`、`/api/files`、`/api/query`、`/api/imports` 等都返回共享/管理员数据；点「退出管理员」恢复访客视角
 
 > 该 token 同时用于保护 `/api/llm/*` 写操作与 `/api/upload`。未设置 `ADMIN_TOKEN` 时无法进入管理员视角。
+> 「🤖 模型」页仅管理员可见：非管理员打开该页会显示登录框，需输入 `ADMIN_TOKEN`（`POST /api/admin/verify` 校验）。访客提问/记录始终走自己的集合，客户端传来的集合名会被忽略。
 
 ## 数据与存储
 
