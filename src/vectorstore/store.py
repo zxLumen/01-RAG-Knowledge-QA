@@ -8,6 +8,7 @@ from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, V
 
 from src.config import settings
 from src.qa.llm_config import embedding_dim
+from src.vectorstore.context import current_collection
 from src.vectorstore.naming import register_alias, storage_name
 
 _client: QdrantClient | None = None
@@ -60,7 +61,7 @@ def ensure_collection(client: QdrantClient, recreate: bool = False) -> None:
 
 
 def ensure_collection_unlocked(client: QdrantClient, recreate: bool = False) -> None:
-    name = settings.qdrant_collection
+    name = current_collection()
     if client.collection_exists(name):
         if recreate:
             client.delete_collection(name)
@@ -111,13 +112,13 @@ def add_documents(
 
     with _write_lock:
         client.upsert(
-            collection_name=settings.qdrant_collection,
+            collection_name=current_collection(),
             points=points,
         )
 
 
-def collection_info(client: QdrantClient) -> dict | None:
-    name = settings.qdrant_collection
+def collection_info(client: QdrantClient, collection: str | None = None) -> dict | None:
+    name = collection or current_collection()
     if not client.collection_exists(name):
         return None
     info = client.get_collection(name)
@@ -128,9 +129,9 @@ def collection_info(client: QdrantClient) -> dict | None:
     }
 
 
-def distinct_filenames(client: QdrantClient) -> list[dict]:
+def distinct_filenames(client: QdrantClient, collection: str | None = None) -> list[dict]:
     """Return [{filename, chunks}] of distinct filenames actually indexed."""
-    stats = source_stats(client)
+    stats = source_stats(client, collection=collection)
     filename_ids: dict[str, int] = {}
     for item in stats:
         key = Path(item["source"]).name
@@ -141,15 +142,16 @@ def distinct_filenames(client: QdrantClient) -> list[dict]:
     ]
 
 
-def source_stats(client: QdrantClient) -> list[dict]:
+def source_stats(client: QdrantClient, collection: str | None = None) -> list[dict]:
     """Return [{source, filename, chunks, rel_path}] grouped by metadata.source."""
-    if not client.collection_exists(settings.qdrant_collection):
+    name = collection or current_collection()
+    if not client.collection_exists(name):
         return []
     stats: dict[str, dict] = {}
     offset: dict | None = None
     while True:
         points, next_offset = client.scroll(
-            collection_name=settings.qdrant_collection,
+            collection_name=name,
             limit=1000,
             offset=offset,
             with_payload=True,
@@ -189,10 +191,10 @@ def _source_filter(source: str) -> Filter:
 
 def delete_by_source(client: QdrantClient, source: str) -> int:
     """Delete all points whose metadata.source == source. Returns deleted count."""
-    if not client.collection_exists(settings.qdrant_collection):
+    if not client.collection_exists(current_collection()):
         return 0
     points, _ = client.scroll(
-        collection_name=settings.qdrant_collection,
+        collection_name=current_collection(),
         scroll_filter=_source_filter(source),
         limit=1000,
         with_vectors=True,
@@ -201,7 +203,7 @@ def delete_by_source(client: QdrantClient, source: str) -> int:
         return 0
     with _write_lock:
         client.delete(
-            collection_name=settings.qdrant_collection,
+            collection_name=current_collection(),
             points_selector=Filter(
                 must=[
                     FieldCondition(

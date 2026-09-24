@@ -88,7 +88,7 @@
                         @dragover.prevent="dragOverSession(s.id)"
                         @drop.prevent="dragEndSession()"
                         @dragend="dragEndSession()"
-                        :class="(s.id === activeChatId ? 'session-item session-active' : 'session-item') + (dragSessionId === s.id ? ' opacity-40 cursor-grabbing' : ' cursor-grab')">
+                        :class="(s.id === activeChatId ? 'session-item session-active' : 'session-item') + (dragSessionId === s.id ? ' opacity-40 cursor-grabbing' : ' cursor-grab') + (chatCollOpenFor === s.id ? ' raise' : '')">
                         <div class="flex items-center gap-1">
                             <input x-show="editChatId === s.id"
                                 x-model="editChatName"
@@ -206,7 +206,7 @@
     <!-- Ingest Tab -->
     <div x-show="activeTab === 'ingest'" class="flex-1 overflow-y-auto px-6 py-6">
         <div class="max-w-2xl mx-auto space-y-6">
-            <div class="glass-card rounded-2xl p-6 lift">
+            <div class="glass-card rounded-2xl p-6 lift" :class="collectionOpen ? 'raise' : ''">
                 <div class="flex flex-wrap items-center gap-2 mb-4 pb-4 border-b border-gray-700 text-sm">
                     <span class="text-gray-400">当前导入到</span>
                     <div class="relative" @click.outside="collectionOpen = false">
@@ -229,10 +229,17 @@
                     </div>
                 </div>
 
-                <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center justify-between mb-3 gap-3">
                     <h2 class="text-lg font-semibold">文件清单与批量导入</h2>
-                    <span class="text-sm text-gray-400">已导入 <span class="text-strong" x-text="fsSummary.imported"></span> / <span class="text-strong" x-text="fsSummary.total"></span></span>
+                    <div class="flex items-center gap-3">
+                        <span class="text-sm text-gray-400">已导入 <span class="text-strong" x-text="fsSummary.imported"></span> / <span class="text-strong" x-text="fsSummary.total"></span></span>
+                        <button @click="$refs.uploadInput.click()" :disabled="uploading"
+                            class="btn-ghost text-gray-200 rounded-lg px-3 py-1.5 text-xs disabled:opacity-50"
+                            x-text="uploading ? '上传中…' : '⬆ 上传文件'"></button>
+                        <input x-ref="uploadInput" type="file" multiple accept=".md,.txt,.pdf" class="hidden" @change="uploadFiles($event)">
+                    </div>
                 </div>
+                <p x-show="uploadMsg.text" class="text-xs mb-2" :class="uploadMsg.ok ? 'text-green-400' : 'text-red-400'" x-text="uploadMsg.text"></p>
 
                 <div class="mb-3 flex flex-wrap items-center gap-2 text-xs">
                     <div class="relative flex items-center">
@@ -286,6 +293,7 @@
 
                             <span class="text-gray-200 truncate" :class="{'font-medium text-gray-100 cursor-pointer hover:underline': row.isDir, 'cursor-pointer hover:underline': !row.isDir}"
                                       @click="!row.isDir && viewFile(row.rel)" x-text="row.name"></span>
+                            <span x-show="!row.isDir && row.file.sample" class="badge-dim shrink-0">样例</span>
                             <span class="ml-auto shrink-0 text-gray-400 pl-2 font-medium" :title="row.isDir ? dirDotTitle(row) : ''"
                                   x-text="row.isDir ? dirTailLabel(row) : (row.file.imported ? (row.file.chunks + ' 块') : '')"></span>
                         </div>
@@ -410,7 +418,7 @@
     <!-- Status Tab -->
     <div x-show="activeTab === 'status'" class="flex-1 overflow-y-auto px-6 py-6">
         <div class="max-w-2xl mx-auto space-y-6">
-            <div class="glass-card rounded-2xl p-6">
+            <div class="glass-card rounded-2xl p-6" :class="collectionOpen ? 'raise' : ''">
                 <h2 class="text-lg font-semibold mb-4">知识库状态</h2>
                 <div class="space-y-3 text-sm">
                     <div class="flex justify-between py-2 border-b border-gray-700 items-center">
@@ -549,12 +557,19 @@
                         <template x-if="modelForm.provider !== 'custom'">
                             <div class="space-y-1">
                                 <input x-model="modelForm.modelFilter" type="text" placeholder="筛选模型…" class="input-field w-full rounded-lg px-3 py-1.5 text-xs">
-                                <select x-model="modelForm.model" size="6" class="input-field w-full rounded-lg px-3 py-2 text-sm font-mono">
-                                    <template x-for="m in filteredModels(modelForm.modelOptions, modelForm.modelFilter)" :key="m">
-                                        <option :value="m" x-text="m"></option>
+                                <div class="model-list">
+                                    <template x-if="filteredModels(modelForm.modelOptions, modelForm.modelFilter).length === 0">
+                                        <div class="model-list-empty" x-text="modelForm.modelOptions.length ? '无匹配模型' : '点「获取模型列表」加载'"></div>
                                     </template>
-                                </select>
-                                <span class="text-xs text-gray-500" x-text="'共 ' + modelForm.modelOptions.length + ' 个，点击「获取模型列表」刷新'"></span>
+                                    <template x-for="m in filteredModels(modelForm.modelOptions, modelForm.modelFilter)" :key="m">
+                                        <button type="button" @click="modelForm.model = m"
+                                            class="model-item" :class="modelForm.model === m ? 'on' : ''">
+                                            <span class="truncate" x-text="m"></span>
+                                            <span x-show="modelForm.model === m" class="shrink-0">✓</span>
+                                        </button>
+                                    </template>
+                                </div>
+                                <span class="text-xs text-gray-500" x-text="'共 ' + modelForm.modelOptions.length + ' 个'"></span>
                             </div>
                         </template>
                     </label>
@@ -633,11 +648,18 @@
                         <template x-if="embedForm.provider !== 'custom'">
                             <div class="space-y-1">
                                 <input x-model="embedForm.modelFilter" type="text" placeholder="筛选模型…" class="input-field w-full rounded-lg px-3 py-1.5 text-xs">
-                                <select x-model="embedForm.model" @change="onEmbedModelInput()" size="6" class="input-field w-full rounded-lg px-3 py-2 text-sm font-mono">
-                                    <template x-for="m in filteredModels(embedForm.modelOptions, embedForm.modelFilter)" :key="m">
-                                        <option :value="m" x-text="m"></option>
+                                <div class="model-list">
+                                    <template x-if="filteredModels(embedForm.modelOptions, embedForm.modelFilter).length === 0">
+                                        <div class="model-list-empty" x-text="embedForm.modelOptions.length ? '无匹配模型' : '点「获取模型列表」加载'"></div>
                                     </template>
-                                </select>
+                                    <template x-for="m in filteredModels(embedForm.modelOptions, embedForm.modelFilter)" :key="m">
+                                        <button type="button" @click="embedForm.model = m; onEmbedModelInput()"
+                                            class="model-item" :class="embedForm.model === m ? 'on' : ''">
+                                            <span class="truncate" x-text="m"></span>
+                                            <span x-show="embedForm.model === m" class="shrink-0">✓</span>
+                                        </button>
+                                    </template>
+                                </div>
                             </div>
                         </template>
                     </label>
@@ -740,7 +762,7 @@
 
             <!-- List View -->
             <template x-if="!selectedSession && !restoringImport">
-                <div class="glass-card rounded-2xl p-6">
+                <div class="glass-card rounded-2xl p-6" :class="importCollOpen ? 'raise' : ''">
                     <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
                         <h2 class="text-lg font-semibold">导入记录</h2>
                         <div class="flex items-center gap-2 flex-wrap">
@@ -927,6 +949,8 @@ function app() {
         selected: {},
         missingFiles: [],
         fsSummary: { total: 0, imported: 0, unimported: 0 },
+        uploading: false,
+        uploadMsg: { ok: true, text: '' },
         fsSearch: '',
         fsTreeHeight: (() => {
             const h = parseInt(sessionStorage.getItem('ragFsH') || '', 10);
@@ -1590,6 +1614,29 @@ function app() {
                 this.fsSummary = data.summary || { total: 0, imported: 0, unimported: 0 };
                 this.rebuildTree();
             } catch {}
+        },
+
+        async uploadFiles(ev) {
+            const files = Array.from(ev.target.files || []);
+            ev.target.value = '';
+            if (!files.length) return;
+            this.uploading = true;
+            this.uploadMsg = { ok: true, text: '' };
+            try {
+                const fd = new FormData();
+                for (const f of files) fd.append('files', f);
+                const headers = {};
+                if (this.adminToken) headers['X-Admin-Token'] = this.adminToken;
+                const res = await fetch('/api/upload', { method: 'POST', headers, body: fd });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+                this.uploadMsg = { ok: true, text: '已上传 ' + (data.saved || []).length + ' 个文件，请勾选后导入' };
+                await this.loadFiles();
+            } catch (e) {
+                this.uploadMsg = { ok: false, text: e.message };
+            } finally {
+                this.uploading = false;
+            }
         },
 
         rebuildTree() {

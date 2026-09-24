@@ -4,6 +4,7 @@ import re
 from dataclasses import dataclass
 
 from src.config import settings
+from src.vectorstore.context import current_collection
 from src.vectorstore.embedder import get_dense_embeddings
 from src.vectorstore.store import get_client
 
@@ -80,7 +81,7 @@ def search(
 ) -> list[RetrievedChunk]:
     top_k = top_k or settings.top_k
     chunks_per_file = settings.chunks_per_file
-    collection = collection_name or settings.qdrant_collection
+    collection = collection_name or current_collection()
     client = get_client()
 
     dense_embeddings = get_dense_embeddings()

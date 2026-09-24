@@ -13,6 +13,7 @@ from src.ingest import progress as ingest_progress
 from src.ingest.chunker import split_documents
 from src.ingest.loader import SUPPORTED_EXTENSIONS, load_directory, load_file
 from src.qa.llm_config import get_embedding
+from src.vectorstore.context import current_collection, reset_collection, set_collection
 from src.vectorstore.embedder import get_dense_embeddings, get_sparse_embeddings
 from src.vectorstore.store import (
     add_documents,
@@ -124,6 +125,21 @@ def _deleted_sources(
 
 
 def ingest_paths(
+    paths: list[str],
+    recreate: bool = False,
+    delete_missing: bool = True,
+    progress: Callable[[str, int, int], None] | None = None,
+    collection: str | None = None,
+) -> dict:
+    token = set_collection(collection) if collection else None
+    try:
+        return _ingest_paths(paths, recreate, delete_missing, progress)
+    finally:
+        if token is not None:
+            reset_collection(token)
+
+
+def _ingest_paths(
     paths: list[str],
     recreate: bool = False,
     delete_missing: bool = True,
@@ -320,7 +336,7 @@ def ingest_paths(
         )
 
     if recreate:
-        prune_files(settings.qdrant_collection, {e["source"] for e in entries})
+        prune_files(current_collection(), {e["source"] for e in entries})
 
     session_id = add_session(
         ", ".join(paths),

@@ -11,6 +11,8 @@
 - **流式问答**：`/api/query` SSE 流式输出，回答强制带 `[来源: 文件名]` 引用
 - **停止回答**：生成中可随时中断（`/api/query/cancel`），保留已生成的部分内容并释放模型算力
 - **增量导入**：按文件内容哈希去重（重复导入秒过），支持删除已删除文件、全量重建（recreate）
+- **上传文件（演示模式）**：访客可上传 md/txt/pdf（单文件/单次/单访客均 2M），勾选后导入
+- **访客隔离（演示模式）**：按 cookie 隔离——每人独立目录与 Qdrant 集合，只能看到自己的文件 + 只读样例；一周不访问自动清理，全局占满 2G 时从最旧访客回收
 - **导入进度**：导入/嵌入进度 SSE 轮询、取消导入
 - **集合管理**：多知识库切换、重命名、删除（本地 sqlite 持久化）
 - **Web UI**：对话/导入/知识库管理/模型/状态/导入记录六个页面，Tab 与会话栏可拖拽排序（顺序本地持久化），明暗主题
@@ -91,6 +93,7 @@ python3 -m pip install -e ".[dev]"
 | `EMBEDDING_DIM` | `1024` | 向量维度（换模型若维度变化需重建索引） |
 | `ADMIN_TOKEN` | 空 | 设置后，`/api/llm/*` 写操作需携带 `X-Admin-Token` |
 | `RATE_LIMIT_PER_MINUTE` | `0` | 每 IP 每分钟 `/api/query` 次数上限（0=不限） |
+| `DEMO_MODE` | `false` | 开启访客隔离与上传（公开 demo 用） |
 
 > 切换集合时集合名经 `storage_name()` 映射为 Qdrant 合法存储名，显示名与存储名通过集合别名文件关联，重启后保持。
 > `OLLAMA_MODEL` / `OLLAMA_BASE_URL` / `DENSE_EMBEDDING_MODEL` 保留为旧配置兜底。
@@ -151,6 +154,8 @@ nohup /usr/bin/python3 run_server.py > /tmp/rag_server.log 2>&1 &
 | `POST /api/llm/embedding/profiles` · `DELETE /api/llm/embedding/profiles/{id}` | 嵌入档案 新建/更新 · 删除 |
 | `POST /api/llm/embedding/active` | 切换激活嵌入档案 |
 | `POST /api/llm/test` | 连通性并返回模型列表，`{target: "chat"\|"embedding"}` 分流 |
+| `POST /api/upload` | 上传文件（演示模式），multipart `files`，返回已保存相对路径 |
+| `GET /api/status` | 状态（演示模式返回访客自己的集合） |
 | `GET|POST /api/models` | 兼容旧接口（模型列表 / 切换当前模型） |
 | `GET /api/files` / `GET /api/files/content` | 已索引文件 / 内容 |
 | `POST /api/collections/switch` · `/rename` · `/delete` | 集合切换 / 重命名 / 删除 |
@@ -198,6 +203,23 @@ export RATE_LIMIT_PER_MINUTE=20
 - **嵌入切换**：换模型/维度后需重新导入（导入页「重建」），否则检索维度不匹配
 - **并发**：本地 Qdrant `path=` 模式适合单实例 demo；高并发可改用 Qdrant server 模式
 - 提示：DeepSeek 等对话 API **没有 embeddings 接口**，嵌入需另选厂商（OpenAI / 智谱 / 通义 / 硅基流动等）
+
+### 演示模式（访客隔离）
+
+公开 demo 建议开启访客隔离：
+
+```bash
+export DEMO_MODE=true
+export ADMIN_TOKEN=your-secret   # 可选：保护模型配置等写操作
+export RATE_LIMIT_PER_MINUTE=20
+/usr/bin/python3 run_server.py
+```
+
+- 首次访问自动种 cookie（`rag_visitor`，7 天），此后文件、集合、状态都限定在该访客
+- 上传限制：单文件 / 单次 / 单访客均 **2M**，仅 `.md/.txt/.pdf`；全局占用上限 **2G**
+- 只读样例放在 `data/samples/`，所有访客可见；现有 `data/` 其它内容在演示模式下不可见
+- 超过 7 天未访问的访客会被惰性清理（删集合 + 目录）；全局超 2G 时从最旧访客开始回收
+- 访客集合名为 `visitor_<id>`（每人一个），记录在 `qdrant_data/visitors.json`
 
 ## 数据与存储
 

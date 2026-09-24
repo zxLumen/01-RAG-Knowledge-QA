@@ -7,10 +7,11 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
+from src.api import visitor
 from src.api.schemas import (
     CollectionRenameRequest,
     CollectionsResponse,
@@ -86,6 +87,27 @@ def require_admin(
         raise HTTPException(status_code=401, detail="需要管理员令牌（ADMIN_TOKEN）")
 
 
+def resolve_visitor(request: Request, response: Response) -> str:
+    """Return the visitor id from the cookie, minting one if absent.
+
+    Also lazily evicts expired visitors and enforces the global quota.
+    """
+    vid = request.cookies.get(visitor.VISITOR_COOKIE)
+    if not visitor.is_valid_id(vid):
+        vid = visitor.new_visitor_id()
+        response.set_cookie(
+            visitor.VISITOR_COOKIE,
+            vid,
+            max_age=visitor.VISITOR_TTL_SECONDS,
+            httponly=True,
+            samesite="lax",
+        )
+    visitor.cleanup_expired()
+    visitor.enforce_global_quota()
+    visitor.touch(vid)
+    return vid
+
+
 _rate_lock = threading.Lock()
 _rate_hits: dict[str, list[float]] = {}
 
@@ -104,11 +126,47 @@ def enforce_rate_limit(request: Request) -> None:
         _rate_hits[ip] = hits
 
 
+def _within(child: Path, root: Path) -> bool:
+    try:
+        child.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _visitor_roots(visitor_id: str) -> list[Path]:
+    cwd = Path.cwd().resolve()
+    roots = [(cwd / visitor.SAMPLES_DIR).resolve()]
+    try:
+        roots.append(visitor.visitor_dir(visitor_id).resolve())
+    except ValueError:
+        pass
+    return roots
+
+
+def visitor_collection(request: Request, response: Response) -> str | None:
+    """Effective collection for this request.
+
+    Returns the visitor's dedicated collection in demo mode, otherwise None
+    (meaning the admin/default collection).
+    """
+    if not settings.demo_mode:
+        return None
+    vid = resolve_visitor(request, response)
+    return visitor.collection_name(vid)
+
+
 @router.post("/query")
-async def query(req: QueryRequest, _rate: None = Depends(enforce_rate_limit)):
-    collection = (
-        storage_for_display(req.collection) if req.collection else settings.qdrant_collection
-    )
+async def query(
+    req: QueryRequest,
+    request: Request,
+    response: Response,
+    _rate: None = Depends(enforce_rate_limit),
+):
+    if req.collection:
+        collection = storage_for_display(req.collection)
+    else:
+        collection = visitor_collection(request, response) or settings.qdrant_collection
 
     def event_stream():
         for event in answer_question_stream(
@@ -129,7 +187,7 @@ async def cancel_query(req: QueryCancelRequest):
 
 
 @router.post("/ingest", response_model=IngestResponse)
-async def ingest(req: IngestRequest):
+async def ingest(req: IngestRequest, request: Request, response: Response):
     if ingest_progress.snapshot()["running"]:
         return IngestResponse(
             status="busy",
@@ -141,6 +199,20 @@ async def ingest(req: IngestRequest):
         for_ingest = list(dict.fromkeys(req.paths))
     else:
         for_ingest = [req.path]
+    if settings.demo_mode:
+        vid = resolve_visitor(request, response)
+        allowed = _visitor_roots(vid)
+        clean = []
+        for path in for_ingest:
+            resolved = (Path.cwd() / path).resolve()
+            if any(_within(resolved, root) for root in allowed):
+                clean.append(path)
+        for_ingest = clean
+        if not for_ingest:
+            return IngestResponse(
+                status="error", documents=0, chunks=0,
+                error="只能导入样例或你自己上传的文件",
+            )
     ingest_progress.begin()
     try:
         result = await run_in_threadpool(
@@ -149,6 +221,8 @@ async def ingest(req: IngestRequest):
             recreate=req.recreate,
             delete_missing=req.delete_missing,
             progress=ingest_progress.set_phase,
+            collection=visitor.collection_name(resolve_visitor(request, response))
+            if settings.demo_mode else None,
         )
     except Exception as exc:
         cancelled = ingest_progress.is_cancelled()
@@ -217,17 +291,16 @@ async def ingest_cancel(req: Optional[IngestCancelRequest] = None):
 
 
 @router.get("/status", response_model=StatusResponse)
-async def status():
+async def status(request: Request, response: Response):
     client = get_client()
-    info = collection_info(client)
+    collection = visitor_collection(request, response)
+    name = collection or settings.qdrant_collection
+    info = collection_info(client, collection=name)
+    label = display_name(name) if not collection else "我的知识库"
     if info is None:
-        return StatusResponse(
-            collection=display_name(settings.qdrant_collection),
-            points_count=None,
-            status="not_found",
-        )
+        return StatusResponse(collection=label, points_count=None, status="not_found")
     return StatusResponse(
-        collection=display_name(info["name"]),
+        collection=label,
         points_count=info["points_count"],
         status=str(info["status"]),
     )
@@ -413,20 +486,34 @@ async def select_model(req: ModelSelectRequest):
 
 
 @router.get("/files")
-async def list_files():
-    data_dir = Path("data")
+async def list_files(request: Request, response: Response):
     cwd = Path.cwd().resolve()
-    disk = {}
-    for f in sorted(data_dir.rglob("*")):
-        if f.is_file() and not f.name.startswith("."):
+    collection = visitor_collection(request, response)
+    if settings.demo_mode:
+        roots = _visitor_roots(
+            request.cookies.get(visitor.VISITOR_COOKIE, "")
+        )
+        sample_root = (cwd / visitor.SAMPLES_DIR).resolve()
+    else:
+        roots = [(cwd / "data").resolve()]
+        sample_root = None
+
+    disk: dict[str, dict] = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for f in sorted(root.rglob("*")):
+            if not f.is_file() or f.name.startswith("."):
+                continue
             resolved = f.resolve()
             disk[str(resolved)] = {
                 "rel": str(resolved.relative_to(cwd)),
                 "name": f.name,
+                "sample": bool(sample_root and _within(resolved, sample_root)),
             }
 
     try:
-        stats = source_stats(get_client())
+        stats = source_stats(get_client(), collection=collection)
     except Exception:
         stats = []
     kb = {str(Path(s["source"]).resolve()): s["chunks"] for s in stats}
@@ -442,6 +529,7 @@ async def list_files():
             {
                 "rel": info["rel"],
                 "name": info["name"],
+                "sample": info["sample"],
                 "imported": imported,
                 "chunks": chunks or 0,
             }
@@ -465,14 +553,16 @@ async def list_files():
 
 
 @router.get("/files/content")
-async def file_content(rel: str):
+async def file_content(rel: str, request: Request, response: Response):
     cwd = Path.cwd().resolve()
-    base = (cwd / "data").resolve()
     target = (cwd / rel).resolve()
-    try:
-        target.relative_to(base)
-    except ValueError:
-        raise HTTPException(status_code=400, detail="path is outside the data directory")
+    if settings.demo_mode:
+        vid = request.cookies.get(visitor.VISITOR_COOKIE, "")
+        roots = _visitor_roots(vid)
+    else:
+        roots = [(cwd / "data").resolve()]
+    if not any(_within(target, root) for root in roots):
+        raise HTTPException(status_code=400, detail="path is outside allowed directories")
     if not target.is_file():
         raise HTTPException(status_code=404, detail="file not found")
     try:
@@ -483,8 +573,65 @@ async def file_content(rel: str):
     return {"rel": rel, "name": target.name, "content": content}
 
 
+ALLOWED_UPLOAD_EXT = {".md", ".txt", ".pdf"}
+
+
+@router.post("/upload")
+async def upload(
+    request: Request,
+    response: Response,
+    files: list[UploadFile] = File(...),
+    _admin: None = Depends(require_admin),
+):
+    if not settings.demo_mode:
+        raise HTTPException(status_code=400, detail="上传功能仅在演示模式下开启")
+    vid = resolve_visitor(request, response)
+    dest = visitor.visitor_dir(vid)
+    dest.mkdir(parents=True, exist_ok=True)
+
+    total_incoming = 0
+    payloads: list[tuple[str, bytes]] = []
+    for uf in files:
+        name = Path(uf.filename or "").name
+        if not name or name.startswith("."):
+            raise HTTPException(status_code=400, detail=f"非法文件名: {uf.filename!r}")
+        if Path(name).suffix.lower() not in ALLOWED_UPLOAD_EXT:
+            raise HTTPException(
+                status_code=400, detail=f"不支持的文件类型: {name}（仅 md/txt/pdf）"
+            )
+        data = await uf.read()
+        if len(data) > visitor.MAX_FILE_BYTES:
+            raise HTTPException(status_code=413, detail=f"{name} 超过单文件上限 2M")
+        total_incoming += len(data)
+        if total_incoming > visitor.MAX_REQUEST_BYTES:
+            raise HTTPException(status_code=413, detail="单次上传总量超过 2M")
+        payloads.append((name, data))
+
+    used = visitor.visitor_usage(vid)
+    if used + total_incoming > visitor.VISITOR_QUOTA_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail="你的可用空间仅 2M，请先删除部分已上传文件",
+        )
+    visitor.enforce_global_quota(total_incoming)
+
+    saved = []
+    for name, data in payloads:
+        target = dest / name
+        try:
+            target.write_bytes(data)
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"保存失败: {e}")
+        saved.append(str(target.resolve().relative_to(Path.cwd().resolve())))
+
+    return {"status": "ok", "saved": saved, "usage": visitor.visitor_usage(vid)}
+
+
 @router.get("/collections", response_model=CollectionsResponse)
-async def collections():
+async def collections(request: Request, response: Response):
+    if settings.demo_mode:
+        resolve_visitor(request, response)
+        return CollectionsResponse(current="我的知识库", collections=["我的知识库"])
     return CollectionsResponse(
         current=display_name(settings.qdrant_collection),
         collections=[display_name(c) for c in list_collections(get_client())],
@@ -537,9 +684,17 @@ async def remove_collection(req: CollectionSwitchRequest):
 
 @router.get("/imports", response_model=ImportListResponse)
 async def list_imports(
-    q: Optional[str] = None, limit: int = 100, collection: Optional[str] = None
+    request: Request,
+    response: Response,
+    q: Optional[str] = None,
+    limit: int = 100,
+    collection: Optional[str] = None,
 ):
-    collection = storage_for_display(collection) if collection else settings.qdrant_collection
+    if settings.demo_mode and not collection:
+        vid = request.cookies.get(visitor.VISITOR_COOKIE, "")
+        collection = visitor.collection_name(vid) if visitor.is_valid_id(vid) else ""
+    else:
+        collection = storage_for_display(collection) if collection else settings.qdrant_collection
     sessions = list_sessions(q=q, limit=limit, collection=collection)
     stats = collection_session_stats(collection)
 
@@ -547,7 +702,7 @@ async def list_imports(
     newest_id = max(stats) if stats else None
     if sessions and newest_id is not None and sessions[0]["id"] == newest_id:
         try:
-            src = source_stats(get_client())
+            src = source_stats(get_client(), collection=collection)
             live = (len(src), sum(s["chunks"] for s in src))
         except Exception:
             live = None

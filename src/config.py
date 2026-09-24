@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     admin_token: str = ""
     # Simple per-IP rate limit for query endpoints (requests per minute, 0 = off)
     rate_limit_per_minute: int = 0
+    # Visitor isolation (per-cookie data dir + collection). Enable for public demos.
+    demo_mode: bool = False
 
     chunk_size: int = 500
     chunk_overlap: int = 75
