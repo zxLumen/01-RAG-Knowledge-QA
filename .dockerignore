@@ -1,0 +1,22 @@
+# 私有/本地数据与产物,绝不进镜像
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# 运行时数据(由卷挂载提供)
+data/
+qdrant_data/
+
+# 配置(由环境变量注入)
+.env
+
+# 仓库/工具
+.git/
+.gitignore
+.github/
+*.md
+.DS_Store

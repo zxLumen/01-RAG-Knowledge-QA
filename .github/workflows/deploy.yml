@@ -1,0 +1,65 @@
+name: build image
+
+# 只负责构建镜像推 GHCR(公开);服务器端由 Watchtower 按 :latest 自动拉取更新,
+# 故本仓库不需要任何 SSH 部署密钥。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image name (lowercase)
+        id: img
+        run: |
+          OWNER=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          echo "image=ghcr.io/${OWNER}/01-rag-knowledge-qa" >> "$GITHUB_OUTPUT"
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: |
+            ${{ steps.img.outputs.image }}:${{ github.sha }}
+            ${{ steps.img.outputs.image }}:latest
+
+      # 公开仓库 Actions 发布的包默认继承 public;此处读回断言,必要时用 zxLumen PAT 兜底
+      - name: Ensure GHCR package is public
+        env:
+          GH_PACKAGES_PAT: ${{ secrets.GH_PACKAGES_PAT }}
+        run: |
+          NAME="01-rag-knowledge-qa"
+          vis() { GH_TOKEN="$1" gh api "/user/packages/container/${NAME}" --jq .visibility 2>/dev/null || echo ""; }
+          [ -n "$GH_PACKAGES_PAT" ] || { echo "::error::缺少 GH_PACKAGES_PAT"; exit 1; }
+          VIS=$(vis "$GH_PACKAGES_PAT")
+          echo "读回(zxLumen PAT): ${VIS}"
+          if [ "${VIS}" = "public" ]; then echo "已是 public"; exit 0; fi
+          GH_TOKEN="$GH_PACKAGES_PAT" gh api -X PATCH "/user/packages/container/${NAME}" \
+              -F visibility=public >/dev/null 2>&1 || true
+          VIS=$(vis "$GH_PACKAGES_PAT")
+          echo "置公开后: ${VIS}"
+          [ "${VIS}" = "public" ] || { echo "::error::GHCR 包未确认 public(当前 ${VIS:-未知})"; exit 1; }
