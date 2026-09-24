@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
@@ -21,9 +23,15 @@ from src.api.schemas import (
     IngestCancelRequest,
     IngestRequest,
     IngestResponse,
+    LLMActiveRequest,
+    LLMConfigResponse,
+    LLMEmbeddingRequest,
+    LLMProfileRequest,
+    LLMTestRequest,
     ModelInfo,
     ModelSelectRequest,
     ModelsResponse,
+    ProvidersResponse,
     QueryCancelRequest,
     QueryRequest,
     StatusResponse,
@@ -41,8 +49,9 @@ from src.ingest import progress as ingest_progress
 from src.ingest.loader import load_file
 from src.ingest.pipeline import ingest_paths
 from src.qa import cancel as generation_cancel
+from src.qa import llm as llm_client
+from src.qa import llm_config, providers
 from src.qa.chain import answer_question_stream
-from src.qa.model_state import get_current_model, set_current_model
 from src.vectorstore.naming import (
     delete_alias,
     display_name,
@@ -62,8 +71,41 @@ router = APIRouter(prefix="/api")
 logger = logging.getLogger("rag")
 
 
+def require_admin(
+    x_admin_token: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+) -> None:
+    """Guard write operations when ADMIN_TOKEN is configured."""
+    expected = settings.admin_token
+    if not expected:
+        return
+    provided = x_admin_token or ""
+    if not provided and authorization and authorization.lower().startswith("bearer "):
+        provided = authorization[7:].strip()
+    if provided != expected:
+        raise HTTPException(status_code=401, detail="需要管理员令牌（ADMIN_TOKEN）")
+
+
+_rate_lock = threading.Lock()
+_rate_hits: dict[str, list[float]] = {}
+
+
+def enforce_rate_limit(request: Request) -> None:
+    limit = settings.rate_limit_per_minute
+    if limit <= 0:
+        return
+    ip = request.client.host if request.client else "?"
+    now = time.time()
+    with _rate_lock:
+        hits = [t for t in _rate_hits.get(ip, []) if now - t < 60]
+        if len(hits) >= limit:
+            raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
+        hits.append(now)
+        _rate_hits[ip] = hits
+
+
 @router.post("/query")
-async def query(req: QueryRequest):
+async def query(req: QueryRequest, _rate: None = Depends(enforce_rate_limit)):
     collection = (
         storage_for_display(req.collection) if req.collection else settings.qdrant_collection
     )
@@ -193,10 +235,16 @@ async def status():
 
 @router.get("/config", response_model=ConfigResponse)
 async def config():
+    active = llm_config.get_active()
+    emb = llm_config.get_embedding()
     return ConfigResponse(
-        embedding_model=settings.dense_embedding_model,
-        llm_model=get_current_model(),
-        llm_base_url=settings.ollama_base_url,
+        embedding_model=emb.get("model", settings.dense_embedding_model),
+        embedding_provider=emb.get("provider", "ollama"),
+        embedding_dim=llm_config.embedding_dim(),
+        llm_model=active.get("model", ""),
+        llm_provider=active.get("provider", ""),
+        llm_protocol=active.get("protocol", ""),
+        llm_base_url=active.get("base_url", ""),
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
         top_k=settings.top_k,
@@ -204,13 +252,130 @@ async def config():
     )
 
 
+# --- LLM model management -------------------------------------------------
+
+
+@router.get("/llm/providers", response_model=ProvidersResponse)
+async def llm_providers():
+    return ProvidersResponse(
+        providers=providers.list_providers(),
+        embedding_dims=providers.KNOWN_EMBEDDING_DIMS,
+    )
+
+
+@router.get("/llm/config", response_model=LLMConfigResponse)
+async def llm_config_get():
+    return LLMConfigResponse(**llm_config.public_config())
+
+
+@router.post("/llm/profiles", response_model=LLMConfigResponse)
+async def llm_profile_upsert(req: LLMProfileRequest, _admin: None = Depends(require_admin)):
+    data = req.model_dump()
+    if data.get("temperature") is None:
+        data.pop("temperature", None)
+    llm_config.upsert_profile(data)
+    return LLMConfigResponse(**llm_config.public_config())
+
+
+@router.delete("/llm/profiles/{profile_id}", response_model=LLMConfigResponse)
+async def llm_profile_delete(profile_id: str, _admin: None = Depends(require_admin)):
+    if not llm_config.delete_profile(profile_id):
+        raise HTTPException(status_code=400, detail="至少保留一个档案，或档案不存在")
+    return LLMConfigResponse(**llm_config.public_config())
+
+
+@router.post("/llm/active", response_model=LLMConfigResponse)
+async def llm_set_active(req: LLMActiveRequest, _admin: None = Depends(require_admin)):
+    if not llm_config.set_active(req.id):
+        raise HTTPException(status_code=404, detail="档案不存在")
+    return LLMConfigResponse(**llm_config.public_config())
+
+
+@router.post("/llm/embedding/profiles", response_model=LLMConfigResponse)
+async def llm_embedding_upsert(req: LLMEmbeddingRequest, _admin: None = Depends(require_admin)):
+    data = req.model_dump()
+    if data.get("dim") is None:
+        data.pop("dim", None)
+    llm_config.upsert_embedding_profile(data)
+    return LLMConfigResponse(**llm_config.public_config())
+
+
+@router.delete("/llm/embedding/profiles/{profile_id}", response_model=LLMConfigResponse)
+async def llm_embedding_delete(profile_id: str, _admin: None = Depends(require_admin)):
+    if not llm_config.delete_embedding_profile(profile_id):
+        raise HTTPException(status_code=400, detail="至少保留一个嵌入档案，或档案不存在")
+    return LLMConfigResponse(**llm_config.public_config())
+
+
+@router.post("/llm/embedding/active", response_model=LLMConfigResponse)
+async def llm_embedding_set_active(req: LLMActiveRequest, _admin: None = Depends(require_admin)):
+    if not llm_config.set_embedding_active(req.id):
+        raise HTTPException(status_code=404, detail="档案不存在")
+    return LLMConfigResponse(**llm_config.public_config())
+
+
+def _friendly_llm_error(exc: Exception) -> str:
+    text = str(exc)
+    low = text.lower()
+    if "401" in text or "unauthorized" in low or "authorization required" in low:
+        return "认证失败：需要有效的 API Key（请填写后再获取）"
+    if "403" in text:
+        return "无权限：该 Key 不能访问此服务"
+    if "404" in text:
+        return "接口不存在：请检查 Base URL（通常需以 /v1 结尾）"
+    if "timed out" in low or "timeout" in low:
+        return "连接超时：请检查网络或 Base URL"
+    return f"连接失败: {text}"
+
+
+@router.post("/llm/test")
+async def llm_test(req: LLMTestRequest, _admin: None = Depends(require_admin)):
+    if req.id:
+        profile = (
+            llm_config.get_embedding_profile(req.id)
+            if req.target == "embedding"
+            else llm_config.get_profile(req.id)
+        )
+        if profile is None:
+            raise HTTPException(status_code=404, detail="档案不存在")
+        test_profile = dict(profile)
+    elif req.target == "embedding":
+        emb = llm_config.get_embedding_active()
+        provider = req.provider or emb.get("provider") or "ollama"
+        test_profile = {
+            "provider": provider,
+            "protocol": providers.protocol_for(provider),
+            "base_url": (
+                req.base_url or emb.get("base_url") or providers.default_base_url(provider)
+            ).rstrip("/"),
+            "api_key": req.api_key or emb.get("api_key", ""),
+            "model": req.model or emb.get("model", ""),
+        }
+    else:
+        provider = req.provider or "custom"
+        test_profile = {
+            "provider": provider,
+            "protocol": providers.protocol_for(provider),
+            "base_url": (req.base_url or providers.default_base_url(provider)).rstrip("/"),
+            "api_key": req.api_key or "",
+            "model": req.model or "",
+        }
+    if req.api_key:
+        test_profile["api_key"] = req.api_key
+    try:
+        models = await run_in_threadpool(llm_client.list_models, test_profile)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=_friendly_llm_error(exc))
+    models = providers.filter_by_purpose(models, req.target)
+    return {"ok": True, "models": models}
+
+
 def _list_ollama_models() -> list[dict]:
     import requests as _requests
 
-    resp = _requests.get(
-        f"{settings.ollama_base_url}/api/tags",
-        timeout=10,
-    )
+    active = llm_config.get_active()
+    base = active.get("base_url") or settings.ollama_base_url
+    resp = _requests.get(f"{base}/api/tags", timeout=10)
     resp.raise_for_status()
     return resp.json().get("models", [])
 
@@ -220,14 +385,14 @@ async def list_models():
     try:
         tags = await run_in_threadpool(_list_ollama_models)
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"无法连接 Ollama: {exc}")
+        raise HTTPException(status_code=503, detail=f"无法连接模型服务: {exc}")
     models = [
         ModelInfo(name=m.get("name", ""), size=m.get("size"))
         for m in tags
         if m.get("name")
     ]
     models.sort(key=lambda m: m.name)
-    return ModelsResponse(models=models, current=get_current_model())
+    return ModelsResponse(models=models, current=llm_config.get_current_model())
 
 
 @router.post("/models", response_model=ModelsResponse)
@@ -235,20 +400,16 @@ async def select_model(req: ModelSelectRequest):
     name = (req.model or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="模型名不能为空")
+    llm_config.set_current_model(name)
     try:
         tags = await run_in_threadpool(_list_ollama_models)
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"无法连接 Ollama: {exc}")
-    available = {m for m in (t.get("name", "") for t in tags) if m}
-    if name not in available:
-        raise HTTPException(
-            status_code=400,
-            detail=f"模型 {name} 不存在于 Ollama（可用: {', '.join(sorted(available)) or '无'}）",
-        )
-    set_current_model(name)
-    models = [ModelInfo(name=m.get("name", ""), size=m.get("size")) for m in tags if m.get("name")]
+    except Exception:
+        tags = []
+    models = [
+        ModelInfo(name=m.get("name", ""), size=m.get("size")) for m in tags if m.get("name")
+    ]
     models.sort(key=lambda m: m.name)
-    return ModelsResponse(models=models, current=get_current_model())
+    return ModelsResponse(models=models, current=llm_config.get_current_model())
 
 
 @router.get("/files")

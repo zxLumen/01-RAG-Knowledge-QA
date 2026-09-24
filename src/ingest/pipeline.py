@@ -12,6 +12,7 @@ from src.imports.store import add_files, add_session, latest_md5_by_rel_path, pr
 from src.ingest import progress as ingest_progress
 from src.ingest.chunker import split_documents
 from src.ingest.loader import SUPPORTED_EXTENSIONS, load_directory, load_file
+from src.qa.llm_config import get_embedding
 from src.vectorstore.embedder import get_dense_embeddings, get_sparse_embeddings
 from src.vectorstore.store import (
     add_documents,
@@ -38,7 +39,7 @@ def _record_session(
         status=status,
         error=error,
         duration_ms=int((time.monotonic() - started) * 1000),
-        embedding_model=settings.dense_embedding_model,
+        embedding_model=get_embedding().get('model') or settings.dense_embedding_model,
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
     )
@@ -178,7 +179,7 @@ def ingest_paths(
                 chunks=0,
                 status="ok",
                 duration_ms=int((time.monotonic() - started) * 1000),
-                embedding_model=settings.dense_embedding_model,
+                embedding_model=get_embedding().get('model') or settings.dense_embedding_model,
                 chunk_size=settings.chunk_size,
                 chunk_overlap=settings.chunk_overlap,
             )
@@ -328,7 +329,7 @@ def ingest_paths(
         chunks=len(chunks),
         status="ok",
         duration_ms=int((time.monotonic() - started) * 1000),
-        embedding_model=settings.dense_embedding_model,
+        embedding_model=get_embedding().get('model') or settings.dense_embedding_model,
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
     )

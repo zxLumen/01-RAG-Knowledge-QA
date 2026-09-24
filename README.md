@@ -1,18 +1,20 @@
 # RAG Knowledge QA
 
-本地运行的知识库检索问答应用（RAG）。所有能力本地闭环：FastEmbed 生成 dense + sparse 混合向量，Qdrant（本地持久化）存储与检索，Ollama 提供大模型推理。无任何云端依赖。
+本地运行的知识库检索问答应用（RAG）。默认全部能力本地闭环：dense + sparse 混合向量、Qdrant（本地持久化）存储与检索、Ollama 提供大模型推理。**也可一键切换到云端 API**（OpenAI 兼容 / 嵌入 API），便于部署成公开 demo。
 
 ## 特性
 
 - **混合检索**：dense（bge-m3 向量相似度）+ 关键词（Text 匹配加权）双路召回
 - **文件级去重**：top-k 检索保证「不同文件数 ≤ k」，同一文件最多保留 `chunks_per_file` 个高分 chunk，避免单个长文档垄断上下文
+- **多厂商模型管理**：内置 OpenAI / DeepSeek / 智谱 / 通义 / Kimi / 硅基流动 / OpenRouter / **OpenCode Zen / OpenCode Go** / 本地 Ollama 预设；**对话模型与嵌入模型都是多档案模式**（新建/编辑/删除/激活切换）
+- **模型名下拉选择**：从厂商实时拉取（Ollama `/api/tags` 或 OpenAI `GET /models`），带筛选框；**不回退预设**，点「获取模型列表」实际请求，失败才红字提示（如需 Key 会提示认证失败），`custom` 自定义厂商手填
 - **流式问答**：`/api/query` SSE 流式输出，回答强制带 `[来源: 文件名]` 引用
 - **停止回答**：生成中可随时中断（`/api/query/cancel`），保留已生成的部分内容并释放模型算力
 - **增量导入**：按文件内容哈希去重（重复导入秒过），支持删除已删除文件、全量重建（recreate）
 - **导入进度**：导入/嵌入进度 SSE 轮询、取消导入
 - **集合管理**：多知识库切换、重命名、删除（本地 sqlite 持久化）
-- **在线模型切换**：右上角下拉切换 Ollama 模型（当前会话实时生效）
-- **Web UI**：对话/导入/知识库管理/状态/导入记录五个页面，Tab 与会话栏可拖拽排序（顺序本地持久化），明暗主题
+- **Web UI**：对话/导入/知识库管理/模型/状态/导入记录六个页面，Tab 与会话栏可拖拽排序（顺序本地持久化），明暗主题
+- **可部署 demo**：配置走环境变量或本地 JSON，写操作可用 `ADMIN_TOKEN` 保护，支持按 IP 限流
 
 ## 技术栈
 
@@ -21,8 +23,8 @@
 | Python 3.9+ | 运行环境 |
 | FastAPI + Uvicorn | Web 服务（SSE 流式） |
 | Qdrant | 向量库（本地 `path=` 模式，sqlite 持久化） |
-| FastEmbed (bge-m3) | dense (1024 维) + sparse 混合向量 |
-| Ollama | 本地 LLM 推理 |
+| bge-m3（Ollama 或 API） | dense (1024 维) + FastEmbed bm25 sparse 混合向量 |
+| Ollama / OpenAI 兼容 API | LLM 与 Embedding 推理（可切换） |
 | LangChain Text Splitters | 文档分块 |
 | PyMuPDF | PDF 解析 |
 | Alpine.js | 前端交互 |
@@ -38,7 +40,8 @@
 │   ├── api/                 # FastAPI 路由与 schema（routes.py, app.py）
 │   ├── ingest/              # 文档加载 / 分块 / 导入管线 / 进度
 │   ├── retrieval/hybrid.py  # 混合检索与文件级去重
-│   ├── qa/                  # chain（上下文组装 + Ollama 调用）、模型状态
+│   ├── qa/                  # chain（上下文组装+问答）、llm（统一调用）、
+│   │                        # llm_config（档案/密钥）、providers（厂商预设）、cancel（停止）
 │   ├── vectorstore/         # store（写入/集合操作）、embedder、naming
 │   └── config.py            # 配置（.env 驱动）
 ├── static/                  # 前端（index.html + app.css，Alpine.js CDN）
@@ -58,8 +61,8 @@ python3 -m pip install -e ".[dev]"
 
 ### 前置依赖
 
-- **Ollama**：`ollama serve` 后 `ollama pull qwen3:8b`（任意支持 OpenAI chat 的模型均可，如 qwen2.5）
-- 首次运行会自动下载 bge-m3 嵌入模型（FastEmbed），需要联网一次
+- **Ollama**（本地模式）：`ollama serve` 后 `ollama pull qwen3:8b`（对话）与 `ollama pull bge-m3`（嵌入）；也可用云端 API 免本地依赖
+- 稀疏检索用 FastEmbed `Qdrant/bm25`，首次会自动下载模型（需联网一次）
 
 ## 配置（.env）
 
@@ -67,15 +70,30 @@ python3 -m pip install -e ".[dev]"
 | --- | --- | --- |
 | `QDRANT_URL` | `http://localhost:6333` | 本地模式填目录路径（如 `./qdrant_data`），内存模式填 `:memory:`，也可连远程 qdrant server |
 | `QDRANT_COLLECTION` | `knowledge_base` | 当前激活集合（存储名，中文会自动映射为安全文件名） |
-| `DENSE_EMBEDDING_MODEL` | `BAAI/bge-m3` | 嵌入模型（1024 维 dense） |
-| `OLLAMA_MODEL` | `qwen2.5` | 兜底 LLM（实际以运行时切换/`llm_model.json` 为准） |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama 地址 |
 | `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `150` | 分块参数 |
 | `TOP_K` | `3` | 检索目标：不同的文件数上限 |
 | `CHUNKS_PER_FILE` | `3` | 每个选中文件最多保留的 chunk 数 |
 | `RERANK_TOP_K` / `RRF_K` | `5` / `60` | 预留的粗排参数 |
 
+**LLM / Embedding（env 为默认，`qdrant_data/llm_config.json` 覆盖）**
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `LLM_PROVIDER` | `ollama` | `ollama` / `openai` / `deepseek` / `zhipuai` / `dashscope` / `moonshot` / `siliconflow` / `openrouter` / `opencode` / `opencode-go` / `custom` |
+| `LLM_BASE_URL` | 按 provider 预置 | 如 `https://api.deepseek.com/v1` |
+| `LLM_API_KEY` | 空 | 远程 Key（也支持 `${ENV_VAR}` 引用） |
+| `LLM_MODEL` | `OLLAMA_MODEL` | 模型名 |
+| `LLM_TEMPERATURE` | `0` | 采样温度 |
+| `EMBEDDING_PROVIDER` | `ollama` | 嵌入厂商（同上） |
+| `EMBEDDING_BASE_URL` | 按 provider 预置 | 嵌入接口地址 |
+| `EMBEDDING_API_KEY` | 空 | 嵌入 Key |
+| `EMBEDDING_MODEL` | `DENSE_EMBEDDING_MODEL` | 嵌入模型 |
+| `EMBEDDING_DIM` | `1024` | 向量维度（换模型若维度变化需重建索引） |
+| `ADMIN_TOKEN` | 空 | 设置后，`/api/llm/*` 写操作需携带 `X-Admin-Token` |
+| `RATE_LIMIT_PER_MINUTE` | `0` | 每 IP 每分钟 `/api/query` 次数上限（0=不限） |
+
 > 切换集合时集合名经 `storage_name()` 映射为 Qdrant 合法存储名，显示名与存储名通过集合别名文件关联，重启后保持。
+> `OLLAMA_MODEL` / `OLLAMA_BASE_URL` / `DENSE_EMBEDDING_MODEL` 保留为旧配置兜底。
 
 ## 启动
 
@@ -100,10 +118,22 @@ nohup /usr/bin/python3 run_server.py > /tmp/rag_server.log 2>&1 &
 - **💬 对话**：提问 → 流式回答，来源为 `[文件名]`；左侧会话多开、可重命名、拖拽排序
 - **📥 导入**：选择目录/文件导入；同文件重复导入自动跳过；打开「重建」可全量重建当前集合
 - **📖 知识库管理**：文件列表、集合（切换/重命名/删除）、向量点数
+- **🤖 模型**：多厂商配置档案的新建/编辑/删除/激活；嵌入模型配置；管理令牌
 - **📊 状态**：集合、点数与模型信息
 - **📚 导入记录**：历史导入会话详情
 
-右上角下拉切换 Ollama 模型；右上角按钮切换明暗主题。
+右上角下拉快速切换激活档案；⚙ 进入模型页；右上角按钮切换明暗主题。
+
+### 模型管理与 API 调用
+
+- 进入「🤖 模型」页新建档案：选厂商（自动带出 `base_url`）、填名称/Key/模型/温度
+- **模型列表按用途分流**：对话档案只列对话模型、嵌入档案只列嵌入模型；点「获取模型列表」时会实际请求，成功填充、失败（如缺 Key/认证失败）才在红字显示原因；`custom` 自定义厂商手填模型名
+- 「名称」留空自动取「厂商 + 模型」（编辑时留空保持原名）；「温度」为采样随机性（知识库问答建议 0）
+- **对话模型**与**嵌入模型**各自是多档案：可新建多个、点「启用」切换当前使用项
+- **嵌入厂商下拉只列支持嵌入的厂商**（deepseek/moonshot/openrouter/opencode 无 embeddings 接口，不出现）
+- Embedding 档案含「向量维度」；**改动后需到「导入」页「重建」重新索引**（维度或向量空间变化会导致检索不匹配）
+- 服务端设置了 `ADMIN_TOKEN` 时，所有写操作需在「管理令牌」填入该 token（保存在浏览器本机）
+- **OpenCode Zen / Go**：厂商预设 `OpenCode Zen`（`https://opencode.ai/zen/v1`）与 `OpenCode Go`（`https://opencode.ai/zen/go/v1`），OpenAI 兼容；在档案里手动粘贴 `OPENCODE_API_KEY` 即可调用其模型
 
 ### API 要点
 
@@ -114,7 +144,14 @@ nohup /usr/bin/python3 run_server.py > /tmp/rag_server.log 2>&1 &
 | `POST /api/ingest` | 导入，body: `{path?, paths?, recreate?, delete_missing?}`（阻塞至完成，返回统计） |
 | `GET /api/ingest/progress` / `POST /api/ingest/cancel` | 导入进度 / 取消 |
 | `GET /api/status` / `GET /api/config` | 状态 / 配置 |
-| `GET|POST /api/models` | 模型列表 / 切换模型 |
+| `GET /api/llm/providers` | 内置厂商预设（含 `embeddings` 标记）与已知嵌入维度 |
+| `GET /api/llm/config` | 对话/嵌入 激活档案与档案列表（Key 已脱敏） |
+| `POST /api/llm/profiles` · `DELETE /api/llm/profiles/{id}` | 对话档案 新建/更新 · 删除 |
+| `POST /api/llm/active` | 切换激活对话档案 |
+| `POST /api/llm/embedding/profiles` · `DELETE /api/llm/embedding/profiles/{id}` | 嵌入档案 新建/更新 · 删除 |
+| `POST /api/llm/embedding/active` | 切换激活嵌入档案 |
+| `POST /api/llm/test` | 连通性并返回模型列表，`{target: "chat"\|"embedding"}` 分流 |
+| `GET|POST /api/models` | 兼容旧接口（模型列表 / 切换当前模型） |
 | `GET /api/files` / `GET /api/files/content` | 已索引文件 / 内容 |
 | `POST /api/collections/switch` · `/rename` · `/delete` | 集合切换 / 重命名 / 删除 |
 | `GET /api/imports` · `GET /api/imports/{id}` | 导入记录列表 / 详情 |
@@ -131,22 +168,47 @@ nohup /usr/bin/python3 run_server.py > /tmp/rag_server.log 2>&1 &
 ### 停止回答
 
 - 回答生成期间，输入框发送按钮变为红色「⏹ 停止」；点击后前端调用 `POST /api/query/cancel`
-- 服务端维护生成注册表（`src/qa/cancel.py`）：每路生成（按 `session_id`）进入时就登记，拿到流式响应后挂载连接句柄；取消即置位「已取消」事件并关闭对 Ollama 的连接
-- Ollama 在客户端断开流时立即中止生成（不白白算完），前端收到终帧 `{"type":"done","stopped":true}` 后保留已生成的部分文本并标注「已手动停止」
+- 服务端维护生成注册表（`src/qa/cancel.py`）：每路生成（按 `session_id`）进入时就登记，拿到流式响应后挂载连接句柄；取消即置位「已取消」事件并关闭上游连接
+- 上游在客户端断开流时立即中止生成（不白白算完），前端收到终帧 `{"type":"done","stopped":true}` 后保留已生成的部分文本并标注「已手动停止」
+- 请求由 daemon 线程发出、主生成器轮询取消事件，因此 prefill 阶段点停止也能即时生效
 - 生成结束/异常时注册表自动释放；取消不存在的生成返回 `cancelled:false`
 
 > 说明：当前回复只使用检索到的 chunk 片段，不使用整文件内容。
 
+## 部署（公开 demo / 服务器）
+
+服务器上通常没有本地 Ollama，建议全部走云端 API（OpenAI 兼容）：
+
+```bash
+# 例：嵌入用硅基流动 bge-m3，对话用 DeepSeek；写操作加管理令牌
+export EMBEDDING_PROVIDER=openai
+export EMBEDDING_BASE_URL=https://api.siliconflow.cn/v1
+export EMBEDDING_MODEL=Pro/BAAI/bge-m3        # 或免费版 BAAI/bge-m3
+export EMBEDDING_API_KEY=sk-...
+export LLM_PROVIDER=openai
+export LLM_BASE_URL=https://api.deepseek.com/v1
+export LLM_MODEL=deepseek-chat
+export LLM_API_KEY=sk-...
+export ADMIN_TOKEN=your-secret
+export RATE_LIMIT_PER_MINUTE=20
+/usr/bin/python3 run_server.py
+```
+
+- **密钥**：仅通过环境变量或本地 `qdrant_data/llm_config.json`（`.gitignore` 已忽略）保存，接口一律脱敏返回；也可在页面「管理令牌」处控制写权限
+- **嵌入切换**：换模型/维度后需重新导入（导入页「重建」），否则检索维度不匹配
+- **并发**：本地 Qdrant `path=` 模式适合单实例 demo；高并发可改用 Qdrant server 模式
+- 提示：DeepSeek 等对话 API **没有 embeddings 接口**，嵌入需另选厂商（OpenAI / 智谱 / 通义 / 硅基流动等）
+
 ## 数据与存储
 
 - `data/`：源文档（支持 `.md` / `.txt` / `.pdf`），导入时按目录递归发现
-- `qdrant_data/`：本地 qdrant 持久化（每集合一个 sqlite）、`imports.db`（导入历史/文档哈希）、`collection_aliases.json`（显示名 ↔ 存储名）、`llm_model.json`（当前模型）
+- `qdrant_data/`：本地 qdrant 持久化（每集合一个 sqlite）、`imports.db`（导入历史/文档哈希）、`collection_aliases.json`（显示名 ↔ 存储名）、`llm_config.json`（模型档案/密钥）、`llm_model.json`（旧版单模型，已兼容迁移）
 - PDF 按页切分，chunk 携带 `source`（相对路径）、`filename`、`page`、`chunk_index` 元数据
 
 ## 测试与检查
 
 ```bash
-/usr/bin/python3 -m pytest -q    # 31 passed
+/usr/bin/python3 -m pytest -q    # 46 passed
 ruff check src/
 ```
 
@@ -157,7 +219,8 @@ ruff check src/
 - 本地 sqlite 模式（macOS sqlite 编译为 `THREADSAFE=2`）跨线程写入曾触发 `check_same_thread` 报错；`store.py` 已对所有写操作开启 `force_disable_check_same_thread=True` 并用模块级 `RLock` 串行化，导入与集合操作可并发触发
 - 大模型推理串行排队：同一时间只有一个会话在生成，其余会话的输入不阻塞（每会话瞬态 `busy` 状态）
 - 本机 qwen3:8b 首个 token 延迟约 20+ 秒（prefill 慢），回答生成流畅后取消可即时中断
-- `src/qa/cancel.py` 的注册表/取消逻辑有独立单元测试（`tests/test_cancel.py`）
+- 新建集合的向量维度取自嵌入配置（`llm_config.embedding.dim`），换维需重建
+- 注册表/取消逻辑有独立单元测试（`tests/test_cancel.py`），配置存储/厂商预设/SSE 解析亦有测试
 
 ## 脚本
 

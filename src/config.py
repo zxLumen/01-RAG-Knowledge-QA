@@ -14,6 +14,24 @@ class Settings(BaseSettings):
     ollama_model: str = "qwen2.5"
     ollama_base_url: str = "http://localhost:11434"
 
+    # LLM provider defaults (overridden by qdrant_data/llm_config.json)
+    llm_provider: str = "ollama"
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_model: str = ""
+    llm_temperature: float = 0.0
+
+    # Embedding provider defaults
+    embedding_provider: str = "ollama"
+    embedding_base_url: str = ""
+    embedding_api_key: str = ""
+    embedding_model: str = ""
+
+    # Demo protection: when set, write operations on /api/llm/* require this token
+    admin_token: str = ""
+    # Simple per-IP rate limit for query endpoints (requests per minute, 0 = off)
+    rate_limit_per_minute: int = 0
+
     chunk_size: int = 500
     chunk_overlap: int = 75
 

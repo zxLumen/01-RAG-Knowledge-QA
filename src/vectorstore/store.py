@@ -7,6 +7,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, VectorParams
 
 from src.config import settings
+from src.qa.llm_config import embedding_dim
 from src.vectorstore.naming import register_alias, storage_name
 
 _client: QdrantClient | None = None
@@ -69,7 +70,7 @@ def ensure_collection_unlocked(client: QdrantClient, recreate: bool = False) -> 
     client.create_collection(
         collection_name=name,
         vectors_config={
-            "dense": VectorParams(size=settings.embedding_dim, distance=Distance.COSINE),
+            "dense": VectorParams(size=embedding_dim(), distance=Distance.COSINE),
         },
         sparse_vectors_config={
             "sparse": {},

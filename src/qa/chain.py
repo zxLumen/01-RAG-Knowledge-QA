@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import threading
-import time
 from collections.abc import Generator
 
-import requests as _requests
-
 from src.config import settings
-from src.qa import cancel
-from src.qa.model_state import get_current_model
+from src.qa import cancel, llm
+from src.qa.llm_config import get_active
 from src.retrieval.hybrid import RetrievedChunk, search
 
 SYSTEM_PROMPT = """你是一个知识库问答助手。基于以下检索到的文档片段回答用户问题。
@@ -19,8 +15,6 @@ SYSTEM_PROMPT = """你是一个知识库问答助手。基于以下检索到的�
 3. 如果文档中确实没有相关信息，才回答"根据现有文档，我无法回答这个问题"
 4. 引用来源: 在回答中标注 [来源: 文件名]
 5. 回答简洁准确，先直接给出答案"""
-
-OLLAMA_BASE = settings.ollama_base_url
 
 
 MAX_CONTEXT_CHARS = 4000
@@ -78,21 +72,11 @@ def answer_question(
 
     sources, context = _build_context(chunks)
 
-    resp = _requests.post(
-        f"{OLLAMA_BASE}/api/chat",
-        json={
-            "model": get_current_model(),
-            "messages": _make_messages(context, question),
-            "options": {"temperature": 0, "num_ctx": 8192},
-            "stream": False,
-        },
-        timeout=300,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+    profile = get_active()
+    answer = llm.complete(profile, _make_messages(context, question))
 
     return {
-        "answer": data["message"]["content"],
+        "answer": answer,
         "sources": sources,
         "chunks_used": len(sources),
         "retrieved": _chunk_details(chunks),
@@ -105,7 +89,21 @@ def answer_question_stream(
     collection_name: str | None = None,
     gen_id: str | None = None,
 ) -> Generator[dict, None, None]:
-    chunks = search(question, top_k=top_k or settings.top_k, collection_name=collection_name)
+    try:
+        chunks = search(
+            question, top_k=top_k or settings.top_k, collection_name=collection_name
+        )
+    except Exception:
+        yield {
+            "type": "done",
+            "answer": "检索失败：无法连接嵌入服务或向量库，请检查模型配置。",
+            "sources": [],
+            "chunks_used": 0,
+            "retrieved": [],
+            "stopped": False,
+            "error": True,
+        }
+        return
     if not chunks:
         yield {
             "type": "done",
@@ -119,87 +117,33 @@ def answer_question_stream(
     sources, context = _build_context(chunks)
     stopped = False
     full_answer = ""
+    profile = get_active()
+    messages = _make_messages(context, question)
     cancel.register(gen_id)
 
-    # Ollama only sends response headers once the first token is ready, so a
-    # plain requests.post(...) would block the whole streaming generator during
-    # the (potentially long) prefill phase. Instead we fire the request from a
-    # daemon thread and poll an event so cancellation stays instant at any stage.
-    ready = threading.Event()
-    box: dict = {}
-    err_box: dict = {}
-
-    def _post() -> None:
-        try:
-            resp = _requests.post(
-                f"{OLLAMA_BASE}/api/chat",
-                json={
-                    "model": get_current_model(),
-                    "messages": _make_messages(context, question),
-                    "options": {"temperature": 0, "num_ctx": 8192},
-                    "stream": True,
-                },
-                stream=True,
-                timeout=300,
-            )
-            if cancel.is_cancelled(gen_id):
-                resp.close()
-                return
-            box["resp"] = resp
-            ready.set()
-        except Exception as exc:
-            err_box["exc"] = exc
-            ready.set()
-
-    threading.Thread(target=_post, daemon=True).start()
-    while not ready.is_set():
-        if cancel.is_cancelled(gen_id):
-            stopped = True
+    try:
+        for text in llm.stream_chat(profile, messages, gen_id):
+            full_answer += text
+            yield {"type": "chunk", "text": text}
+        stopped = cancel.is_cancelled(gen_id)
+    except Exception:
+        # Cancellation closes the upstream connection, which surfaces here as a
+        # read error; treat it as a normal stop rather than a failure.
+        stopped = cancel.is_cancelled(gen_id)
+        if not stopped and not full_answer:
             cancel.release(gen_id)
             yield {
                 "type": "done",
-                "answer": full_answer,
+                "answer": "调用大模型失败，请检查模型配置后重试。",
                 "sources": sources,
                 "chunks_used": len(sources),
                 "retrieved": _chunk_details(chunks),
-                "stopped": True,
+                "stopped": False,
+                "error": True,
             }
             return
-        time.sleep(0.1)
-
-    if "exc" in err_box:
+    finally:
         cancel.release(gen_id)
-        yield {
-            "type": "done",
-            "answer": "调用大模型失败，请稍后重试。",
-            "sources": sources,
-            "chunks_used": len(sources),
-            "retrieved": _chunk_details(chunks),
-            "stopped": False,
-        }
-        return
-
-    with box["resp"] as resp:
-        cancel.attach(gen_id, resp)
-        try:
-            for line in resp.iter_lines():
-                if not line:
-                    continue
-                data = __import__("json").loads(line)
-                if "message" in data and "content" in data["message"]:
-                    text = data["message"]["content"]
-                    full_answer += text
-                    yield {"type": "chunk", "text": text}
-                if cancel.is_cancelled(gen_id):
-                    stopped = True
-                    break
-        except Exception:
-            if gen_id:
-                stopped = cancel.is_cancelled(gen_id)
-            else:
-                stopped = True
-        finally:
-            cancel.release(gen_id)
 
     yield {
         "type": "done",

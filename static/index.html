@@ -43,16 +43,16 @@
                 </template>
             </div>
             <select
-                x-show="llmModels.length > 0"
-                :value="configInfo.llm_model"
-                @change="switchModel($event.target.value)"
+                x-show="llmConfig.profiles.length > 0"
+                :value="llmConfig.active_id"
+                @change="switchActiveProfile($event.target.value)"
                 :disabled="modelBusy"
-                class="header-model bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs max-w-[200px]">
-                <template x-for="m in llmModels" :key="m.name">
-                    <option :value="m.name" :selected="m.name === configInfo.llm_model" x-text="m.name"></option>
+                class="header-model bg-gray-800 border border-gray-600 rounded px-2 py-1 text-xs max-w-[240px]">
+                <template x-for="p in llmConfig.profiles" :key="p.id">
+                    <option :value="p.id" :selected="p.id === llmConfig.active_id" x-text="p.name + ' · ' + (p.model || '未设置模型')"></option>
                 </template>
             </select>
-            <span x-show="llmModels.length === 0" class="badge-dim" x-text="configInfo.llm_model ? configInfo.llm_model + ' (加载模型列表…)' : '加载中…'"></span>
+            <button @click="setActiveTab('models')" class="btn-ghost text-white px-2 py-1 rounded text-xs" title="模型管理">⚙</button>
             <span class="badge-dim" x-text="statusText"></span>
         </div>
     </header>
@@ -69,7 +69,7 @@
                 @dragend="dragEndTab()"
                 :class="(activeTab === tab ? 'tab-btn tab-on text-white' : 'tab-btn text-gray-400 hover:text-gray-200 hover:bg-white/5') + (dragTabId === tab ? ' opacity-40 cursor-grabbing' : ' cursor-grab')"
                 class="px-4 py-2.5 text-sm font-medium rounded-t-lg transition-colors"
-                x-text="tab === 'chat' ? '💬 对话' : tab === 'ingest' ? '📥 导入' : tab === 'manage' ? '📖 知识库管理' : tab === 'imports' ? '📚 导入记录' : '📊 状态'"
+                x-text="tab === 'chat' ? '💬 对话' : tab === 'ingest' ? '📥 导入' : tab === 'manage' ? '📖 知识库管理' : tab === 'models' ? '🤖 模型' : tab === 'imports' ? '📚 导入记录' : '📊 状态'"
             ></button>
         </template>
     </div>
@@ -450,11 +450,15 @@
                 <div class="space-y-3 text-sm">
                     <div class="flex justify-between py-2 border-b border-gray-700">
                         <span class="text-gray-400">Embedding 模型</span>
-                        <span x-text="configInfo.embedding_model || '-'"></span>
+                        <span x-text="(configInfo.embedding_model || '-') + ' (' + (configInfo.embedding_provider || '-') + ' · ' + (configInfo.embedding_dim || '-') + '维)'"></span>
                     </div>
                     <div class="flex justify-between py-2 border-b border-gray-700">
                         <span class="text-gray-400">LLM 模型</span>
-                        <span x-text="configInfo.llm_model || '-'"></span>
+                        <span x-text="(configInfo.llm_model || '-') + ' (' + (configInfo.llm_provider || '-') + ')'"></span>
+                    </div>
+                    <div class="flex justify-between py-2 border-b border-gray-700">
+                        <span class="text-gray-400">LLM 接口</span>
+                        <span class="font-mono text-xs break-all text-right" x-text="configInfo.llm_base_url || '-'"></span>
                     </div>
                     <div class="flex justify-between py-2 border-b border-gray-700">
                         <span class="text-gray-400">Chunk 大小</span>
@@ -475,9 +479,191 @@
                 </div>
             </div>
 
-            <button @click="loadStatus(); loadConfig(); loadModels()" class="btn-ghost text-white px-4 py-2 rounded-lg text-sm">
+            <button @click="loadStatus(); loadConfig(); loadLLMConfig()" class="btn-ghost text-white px-4 py-2 rounded-lg text-sm">
                 🔄 刷新
             </button>
+        </div>
+    </div>
+
+    <!-- Models Tab -->
+    <div x-show="activeTab === 'models'" class="flex-1 overflow-y-auto px-6 py-6">
+        <div class="max-w-4xl mx-auto space-y-6">
+
+            <!-- 对话模型档案 -->
+            <div class="glass-card rounded-2xl p-6">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-semibold">对话模型</h2>
+                    <button @click="newProfile()" class="btn-send text-white px-4 py-2 rounded-lg text-sm font-medium">+ 新建档案</button>
+                </div>
+                <div class="space-y-2">
+                    <template x-for="p in llmConfig.profiles" :key="p.id">
+                        <div class="flex items-center justify-between gap-3 border border-gray-700/60 rounded-xl px-4 py-3">
+                            <div class="min-w-0">
+                                <div class="flex items-center gap-2">
+                                    <span class="font-medium" x-text="p.name"></span>
+                                    <span class="badge-dim" x-text="p.provider"></span>
+                                    <span x-show="p.id === llmConfig.active_id" class="text-green-400 text-xs">● 使用中</span>
+                                </div>
+                                <div class="text-xs text-gray-400 truncate" x-text="(p.model || '(未设置模型)') + ' · ' + (p.base_url || '(默认地址)')"></div>
+                                <div class="text-xs text-gray-500" x-show="p.has_key">🔑 <span x-text="p.key_hint"></span></div>
+                            </div>
+                            <div class="flex items-center gap-2 shrink-0">
+                                <button x-show="p.id !== llmConfig.active_id" @click="activateProfile(p.id)" class="btn-ghost text-white px-3 py-1.5 rounded text-xs">启用</button>
+                                <button @click="editProfile(p)" class="btn-ghost text-white px-3 py-1.5 rounded text-xs">编辑</button>
+                                <button @click="deleteProfile(p.id)" class="btn-ghost text-red-300 px-3 py-1.5 rounded text-xs">删除</button>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <!-- 档案表单 -->
+            <div class="glass-card rounded-2xl p-6" x-show="modelForm.open">
+                <h2 class="text-lg font-semibold mb-4" x-text="modelForm.id ? '编辑档案' : '新建档案'"></h2>
+                <div class="grid grid-cols-2 gap-4 text-sm">
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">厂商</span>
+                        <select x-model="modelForm.provider" @change="onProviderChange()" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                            <template x-for="pr in llmProviders" :key="pr.id">
+                                <option :value="pr.id" x-text="pr.name"></option>
+                            </template>
+                        </select>
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">名称</span>
+                        <input x-model="modelForm.name" type="text" placeholder="留空自动：厂商 + 模型" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1 col-span-2">
+                        <span class="text-gray-400 text-xs">Base URL</span>
+                        <input x-model="modelForm.base_url" type="text" placeholder="https://api.example.com/v1" class="input-field w-full rounded-lg px-3 py-2 text-sm font-mono">
+                    </label>
+                    <label class="space-y-1 col-span-2">
+                        <span class="text-gray-400 text-xs">API Key（留空则保持不变）</span>
+                        <input x-model="modelForm.api_key" type="password" :placeholder="modelForm.has_key ? '已设置（' + modelForm.key_hint + '），留空不改' : 'sk-... 或 ${ENV_VAR}'" class="input-field w-full rounded-lg px-3 py-2 text-sm font-mono">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">模型</span>
+                        <template x-if="modelForm.provider === 'custom'">
+                            <input x-model="modelForm.model" type="text" placeholder="模型名（自定义厂商手填）" class="input-field w-full rounded-lg px-3 py-2 text-sm font-mono">
+                        </template>
+                        <template x-if="modelForm.provider !== 'custom'">
+                            <div class="space-y-1">
+                                <input x-model="modelForm.modelFilter" type="text" placeholder="筛选模型…" class="input-field w-full rounded-lg px-3 py-1.5 text-xs">
+                                <select x-model="modelForm.model" size="6" class="input-field w-full rounded-lg px-3 py-2 text-sm font-mono">
+                                    <template x-for="m in filteredModels(modelForm.modelOptions, modelForm.modelFilter)" :key="m">
+                                        <option :value="m" x-text="m"></option>
+                                    </template>
+                                </select>
+                                <span class="text-xs text-gray-500" x-text="'共 ' + modelForm.modelOptions.length + ' 个，点击「获取模型列表」刷新'"></span>
+                            </div>
+                        </template>
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">温度</span>
+                        <input x-model.number="modelForm.temperature" type="number" step="0.1" min="0" max="2" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                </div>
+                <div class="flex items-center gap-3 mt-4 flex-wrap">
+                    <button @click="saveProfile()" class="btn-send text-white px-4 py-2 rounded-lg text-sm font-medium">保存</button>
+                    <button x-show="modelForm.provider !== 'custom'" @click="fetchModelsForForm()" :disabled="modelTesting" class="btn-ghost text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50" x-text="modelTesting ? '获取中…' : '获取模型列表'"></button>
+                    <button @click="modelForm.open = false" class="btn-ghost text-white px-4 py-2 rounded-lg text-sm">取消</button>
+                    <span x-show="modelForm.provider === 'custom'" class="text-xs text-gray-500">自定义厂商请直接手填模型名</span>
+                    <span class="text-xs" :class="modelMsg.ok ? 'text-green-400' : 'text-red-400'" x-text="modelMsg.text"></span>
+                </div>
+            </div>
+
+            <!-- 嵌入模型 -->
+            <div class="glass-card rounded-2xl p-6">
+                <div class="flex items-center justify-between mb-1">
+                    <h2 class="text-lg font-semibold">嵌入模型（Embedding）</h2>
+                    <button @click="newEmbeddingProfile()" class="btn-send text-white px-4 py-2 rounded-lg text-sm font-medium">+ 新建档案</button>
+                </div>
+                <p class="text-xs text-amber-400 mb-4">⚠ 更改嵌入模型或维度后，需到「导入」页用「重建」重新索引，否则检索会维度不匹配。</p>
+                <div class="space-y-2">
+                    <template x-for="p in llmConfig.embedding_profiles" :key="p.id">
+                        <div class="flex items-center justify-between gap-3 border border-gray-700/60 rounded-xl px-4 py-3">
+                            <div class="min-w-0">
+                                <div class="flex items-center gap-2">
+                                    <span class="font-medium" x-text="p.name"></span>
+                                    <span class="badge-dim" x-text="p.provider"></span>
+                                    <span x-show="p.id === llmConfig.embedding_active_id" class="text-green-400 text-xs">● 使用中</span>
+                                </div>
+                                <div class="text-xs text-gray-400 truncate" x-text="(p.model || '(未设置)') + ' · ' + (p.dim || '?') + '维 · ' + (p.base_url || '(默认地址)')"></div>
+                                <div class="text-xs text-gray-500" x-show="p.has_key">🔑 <span x-text="p.key_hint"></span></div>
+                            </div>
+                            <div class="flex items-center gap-2 shrink-0">
+                                <button x-show="p.id !== llmConfig.embedding_active_id" @click="activateEmbeddingProfile(p.id)" class="btn-ghost text-white px-3 py-1.5 rounded text-xs">启用</button>
+                                <button @click="editEmbeddingProfile(p)" class="btn-ghost text-white px-3 py-1.5 rounded text-xs">编辑</button>
+                                <button @click="deleteEmbeddingProfile(p.id)" class="btn-ghost text-red-300 px-3 py-1.5 rounded text-xs">删除</button>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <!-- 嵌入档案表单 -->
+            <div class="glass-card rounded-2xl p-6" x-show="embedForm.open">
+                <h2 class="text-lg font-semibold mb-4" x-text="embedForm.id ? '编辑嵌入档案' : '新建嵌入档案'"></h2>
+                <div class="grid grid-cols-2 gap-4 text-sm">
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">厂商</span>
+                        <select x-model="embedForm.provider" @change="onEmbedProviderChange()" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                            <template x-for="pr in embeddingProviders" :key="pr.id">
+                                <option :value="pr.id" x-text="pr.name"></option>
+                            </template>
+                        </select>
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">名称</span>
+                        <input x-model="embedForm.name" type="text" placeholder="留空自动：厂商 + 模型" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1 col-span-2">
+                        <span class="text-gray-400 text-xs">Base URL</span>
+                        <input x-model="embedForm.base_url" type="text" class="input-field w-full rounded-lg px-3 py-2 text-sm font-mono">
+                    </label>
+                    <label class="space-y-1 col-span-2">
+                        <span class="text-gray-400 text-xs">API Key（留空则保持不变）</span>
+                        <input x-model="embedForm.api_key" type="password" :placeholder="embedForm.has_key ? '已设置（' + embedForm.key_hint + '），留空不改' : 'sk-... 或 ${ENV_VAR}'" class="input-field w-full rounded-lg px-3 py-2 text-sm font-mono">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">模型</span>
+                        <template x-if="embedForm.provider === 'custom'">
+                            <input x-model="embedForm.model" @input="onEmbedModelInput()" type="text" placeholder="嵌入模型名（手填）" class="input-field w-full rounded-lg px-3 py-2 text-sm font-mono">
+                        </template>
+                        <template x-if="embedForm.provider !== 'custom'">
+                            <div class="space-y-1">
+                                <input x-model="embedForm.modelFilter" type="text" placeholder="筛选模型…" class="input-field w-full rounded-lg px-3 py-1.5 text-xs">
+                                <select x-model="embedForm.model" @change="onEmbedModelInput()" size="6" class="input-field w-full rounded-lg px-3 py-2 text-sm font-mono">
+                                    <template x-for="m in filteredModels(embedForm.modelOptions, embedForm.modelFilter)" :key="m">
+                                        <option :value="m" x-text="m"></option>
+                                    </template>
+                                </select>
+                            </div>
+                        </template>
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">向量维度</span>
+                        <input x-model.number="embedForm.dim" type="number" min="1" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                </div>
+                <div class="flex items-center gap-3 mt-4 flex-wrap">
+                    <button @click="saveEmbedding()" class="btn-send text-white px-4 py-2 rounded-lg text-sm font-medium">保存</button>
+                    <button x-show="embedForm.provider !== 'custom'" @click="fetchEmbeddingModels()" :disabled="modelTesting" class="btn-ghost text-white px-4 py-2 rounded-lg text-sm disabled:opacity-50" x-text="modelTesting ? '获取中…' : '获取模型列表'"></button>
+                    <button @click="embedForm.open = false" class="btn-ghost text-white px-4 py-2 rounded-lg text-sm">取消</button>
+                    <span x-show="embedForm.provider === 'custom'" class="text-xs text-gray-500">自定义厂商请直接手填模型名</span>
+                    <span class="text-xs" :class="embedMsg.ok ? 'text-green-400' : 'text-red-400'" x-text="embedMsg.text"></span>
+                </div>
+            </div>
+
+            <!-- 管理令牌 -->
+            <div class="glass-card rounded-2xl p-6">
+                <h2 class="text-lg font-semibold mb-1">管理令牌</h2>
+                <p class="text-xs text-gray-400 mb-3">服务端设置了 ADMIN_TOKEN 时，修改模型配置需填入该令牌（保存在本机浏览器）。</p>
+                <div class="flex items-center gap-3">
+                    <input x-model="adminToken" type="password" placeholder="ADMIN_TOKEN（未设置可留空）" class="input-field flex-1 rounded-lg px-3 py-2 text-sm font-mono">
+                    <button @click="saveAdminToken()" class="btn-ghost text-white px-4 py-2 rounded-lg text-sm">保存令牌</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -678,12 +864,17 @@ function app() {
             { id: 'amber', name: '暖橙', grad: 'linear-gradient(135deg,#f59e0b,#f43f5e)' },
             { id: 'light', name: '明亮', grad: 'linear-gradient(135deg,#0f172a 35%,#f8fafc 90%)' },
         ],
-        activeTab: ['chat', 'ingest', 'manage', 'status', 'imports'].includes(savedTab) ? savedTab : 'chat',
+        activeTab: ['chat', 'ingest', 'manage', 'models', 'status', 'imports'].includes(savedTab) ? savedTab : 'chat',
         tabs: (() => {
-            const def = ['chat', 'ingest', 'manage', 'status', 'imports'];
+            const def = ['chat', 'ingest', 'manage', 'models', 'status', 'imports'];
             try {
                 const saved = JSON.parse(localStorage.getItem('ragTabOrder') || '[]');
-                if (Array.isArray(saved) && saved.length === def.length && def.every((t) => saved.includes(t))) return saved;
+                if (Array.isArray(saved)) {
+                    const valid = saved.filter((t) => def.includes(t));
+                    const missing = def.filter((t) => !valid.includes(t));
+                    const merged = valid.concat(missing);
+                    if (merged.length === def.length) return merged;
+                }
             } catch (e) {}
             return def;
         })(),
@@ -760,6 +951,15 @@ function app() {
         configInfo: {},
         llmModels: [],
         modelBusy: false,
+        llmConfig: { active_id: '', profiles: [], embedding_active_id: '', embedding_profiles: [] },
+        llmProviders: [],
+        embeddingDims: {},
+        adminToken: (() => { try { return localStorage.getItem('ragAdminToken') || ''; } catch (e) { return ''; } })(),
+        modelForm: { open: false, id: '', name: '', provider: 'ollama', base_url: '', api_key: '', model: '', temperature: 0, has_key: false, key_hint: '', modelOptions: [], modelFilter: '' },
+        embedForm: { open: false, id: '', name: '', provider: 'ollama', base_url: '', api_key: '', model: '', dim: 1024, has_key: false, key_hint: '', modelOptions: [], modelFilter: '' },
+        modelMsg: { ok: true, text: '' },
+        embedMsg: { ok: true, text: '' },
+        modelTesting: false,
 
         importSessions: [],
         importSearch: '',
@@ -780,7 +980,7 @@ function app() {
             await this.loadCollections();
             this.ensureChat();
             this.restoreFsExpand();
-            await Promise.all([this.loadStatus(), this.loadConfig(), this.loadModels(), this.loadFiles(), this.loadImports()]);
+            await Promise.all([this.loadStatus(), this.loadConfig(), this.loadLLMConfig(), this.loadProviders(), this.loadFiles(), this.loadImports()]);
             await this.resumeIngestIfRunning();
             if (this.restoringImport) {
                 await this.viewSession(sid);
@@ -812,6 +1012,7 @@ function app() {
             sessionStorage.setItem('ragTab', tab);
             this.activeTab = tab;
             if (tab === 'imports') this.loadImports();
+            if (tab === 'models') { this.loadLLMConfig(); this.loadProviders(); }
         },
 
         reorderArray(arr, fromVal, toVal, keyFn) {
@@ -1566,6 +1767,280 @@ function app() {
             } finally {
                 this.modelBusy = false;
             }
+        },
+
+        adminHeaders() {
+            const h = { 'Content-Type': 'application/json' };
+            if (this.adminToken) h['X-Admin-Token'] = this.adminToken;
+            return h;
+        },
+
+        async loadLLMConfig() {
+            try {
+                const res = await fetch('/api/llm/config');
+                if (res.ok) {
+                    this.llmConfig = await res.json();
+                    this.embedForm.open = false;
+                }
+            } catch {}
+        },
+
+        async loadProviders() {
+            try {
+                const res = await fetch('/api/llm/providers');
+                const data = await res.json();
+                this.llmProviders = data.providers || [];
+                this.embeddingDims = data.embedding_dims || {};
+            } catch {}
+        },
+
+        get embeddingProviders() {
+            return this.llmProviders.filter((p) => p.embeddings);
+        },
+
+        providerPreset(id) {
+            return this.llmProviders.find((p) => p.id === id) || null;
+        },
+
+        isEmbeddingModel(m) {
+            const n = (m || '').toLowerCase();
+            return ['embed', 'bge', 'gte', 'e5', 'nomic', 'text-embedding'].some((h) => n.includes(h));
+        },
+
+        filteredModels(list, q) {
+            const s = (q || '').trim().toLowerCase();
+            const arr = list || [];
+            return s ? arr.filter((m) => m.toLowerCase().includes(s)) : arr;
+        },
+
+        onProviderChange() {
+            const preset = this.providerPreset(this.modelForm.provider);
+            if (preset) {
+                this.modelForm.base_url = preset.base_url || '';
+                this.modelForm.modelOptions = [];
+                this.modelForm.modelFilter = '';
+                this.modelMsg = { ok: true, text: '' };
+            }
+        },
+
+        onEmbedProviderChange() {
+            const preset = this.providerPreset(this.embedForm.provider);
+            if (preset) {
+                this.embedForm.base_url = preset.base_url || '';
+                this.embedForm.modelOptions = [];
+                this.embedForm.modelFilter = '';
+                this.embedMsg = { ok: true, text: '' };
+            }
+        },
+
+        onEmbedModelInput() {
+            const d = this.embeddingDims[(this.embedForm.model || '').trim().toLowerCase()];
+            if (d) this.embedForm.dim = d;
+        },
+
+        newProfile() {
+            this.modelForm = {
+                open: true, id: '', name: '', provider: 'ollama',
+                base_url: (this.providerPreset('ollama') || {}).base_url || '',
+                api_key: '', model: '', temperature: 0, has_key: false, key_hint: '',
+                modelOptions: [], modelFilter: '',
+            };
+            this.modelMsg = { ok: true, text: '' };
+        },
+
+        formatModelLabel(m) {
+            if (!m) return '';
+            const parts = String(m).split('/');
+            return parts[parts.length - 1] || m;
+        },
+
+        editProfile(p) {
+            this.modelForm = {
+                open: true, id: p.id, name: p.name, provider: p.provider,
+                base_url: p.base_url, api_key: '', model: p.model,
+                temperature: p.temperature || 0, has_key: !!p.has_key,
+                key_hint: p.key_hint || '',
+                modelOptions: p.model ? [p.model] : [], modelFilter: '',
+            };
+            this.modelMsg = { ok: true, text: '' };
+        },
+
+        newEmbeddingProfile() {
+            const first = this.embeddingProviders[0] || { id: 'ollama', base_url: '' };
+            this.embedForm = {
+                open: true, id: '', name: '', provider: first.id,
+                base_url: first.base_url || '', api_key: '', model: '',
+                dim: 1024, has_key: false, key_hint: '', modelOptions: [], modelFilter: '',
+            };
+            this.embedMsg = { ok: true, text: '' };
+        },
+
+        editEmbeddingProfile(p) {
+            this.embedForm = {
+                open: true, id: p.id, name: p.name, provider: p.provider,
+                base_url: p.base_url, api_key: '', model: p.model,
+                dim: p.dim || 1024, has_key: !!p.has_key, key_hint: p.key_hint || '',
+                modelOptions: p.model ? [p.model] : [], modelFilter: '',
+            };
+            this.embedMsg = { ok: true, text: '' };
+        },
+
+        async llmWrite(url, method, body) {
+            const res = await fetch(url, {
+                method,
+                headers: this.adminHeaders(),
+                body: body ? JSON.stringify(body) : undefined,
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.status === 401) {
+                this.modelMsg = { ok: false, text: '需要管理令牌：请在下方「管理令牌」填入 ADMIN_TOKEN' };
+                throw new Error('unauthorized');
+            }
+            if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+            return data;
+        },
+
+        async saveProfile() {
+            if (!this.modelForm.model.trim()) {
+                this.modelMsg = { ok: false, text: '请填写模型名' };
+                return;
+            }
+            try {
+                const data = await this.llmWrite('/api/llm/profiles', 'POST', {
+                    id: this.modelForm.id || undefined,
+                    name: this.modelForm.name || undefined,
+                    provider: this.modelForm.provider,
+                    base_url: this.modelForm.base_url || undefined,
+                    api_key: this.modelForm.api_key || undefined,
+                    model: this.modelForm.model,
+                    temperature: this.modelForm.temperature,
+                });
+                this.llmConfig = data;
+                this.modelForm.open = false;
+                this.modelMsg = { ok: true, text: '已保存' };
+                this.loadConfig();
+            } catch (e) {
+                if (e.message !== 'unauthorized') this.modelMsg = { ok: false, text: e.message };
+            }
+        },
+
+        async deleteProfile(id) {
+            if (!confirm('确认删除该模型档案？')) return;
+            try {
+                const data = await this.llmWrite('/api/llm/profiles/' + id, 'DELETE');
+                this.llmConfig = data;
+                this.loadConfig();
+            } catch (e) {
+                if (e.message !== 'unauthorized') alert(e.message);
+            }
+        },
+
+        async activateProfile(id) {
+            try {
+                const data = await this.llmWrite('/api/llm/active', 'POST', { id });
+                this.llmConfig = data;
+                this.loadConfig();
+            } catch (e) {
+                if (e.message !== 'unauthorized') alert(e.message);
+            }
+        },
+
+        async switchActiveProfile(id) {
+            await this.activateProfile(id);
+        },
+
+        async fetchModelsForForm() {
+            this.modelTesting = true;
+            this.modelMsg = { ok: true, text: '' };
+            try {
+                const data = await this.llmWrite('/api/llm/test', 'POST', {
+                    id: this.modelForm.id || undefined,
+                    provider: this.modelForm.provider,
+                    base_url: this.modelForm.base_url || undefined,
+                    api_key: this.modelForm.api_key || undefined,
+                    model: this.modelForm.model || undefined,
+                    target: 'chat',
+                });
+                this.modelForm.modelOptions = data.models || [];
+                this.modelForm.modelFilter = '';
+                this.modelMsg = { ok: true, text: '获取到 ' + (data.models || []).length + ' 个对话模型' };
+            } catch (e) {
+                if (e.message !== 'unauthorized') this.modelMsg = { ok: false, text: e.message };
+            } finally {
+                this.modelTesting = false;
+            }
+        },
+
+        async fetchEmbeddingModels() {
+            this.modelTesting = true;
+            this.embedMsg = { ok: true, text: '' };
+            try {
+                const data = await this.llmWrite('/api/llm/test', 'POST', {
+                    id: this.embedForm.id || undefined,
+                    provider: this.embedForm.provider,
+                    base_url: this.embedForm.base_url || undefined,
+                    api_key: this.embedForm.api_key || undefined,
+                    model: this.embedForm.model || undefined,
+                    target: 'embedding',
+                });
+                this.embedForm.modelOptions = data.models || [];
+                this.embedForm.modelFilter = '';
+                this.embedMsg = { ok: true, text: '获取到 ' + (data.models || []).length + ' 个嵌入模型' };
+            } catch (e) {
+                if (e.message !== 'unauthorized') this.embedMsg = { ok: false, text: e.message };
+            } finally {
+                this.modelTesting = false;
+            }
+        },
+
+        async saveEmbedding() {
+            if (!this.embedForm.model.trim()) {
+                this.embedMsg = { ok: false, text: '请选择嵌入模型' };
+                return;
+            }
+            try {
+                const data = await this.llmWrite('/api/llm/embedding/profiles', 'POST', {
+                    id: this.embedForm.id || undefined,
+                    name: this.embedForm.name || undefined,
+                    provider: this.embedForm.provider,
+                    base_url: this.embedForm.base_url || undefined,
+                    api_key: this.embedForm.api_key || undefined,
+                    model: this.embedForm.model,
+                    dim: this.embedForm.dim || undefined,
+                });
+                this.llmConfig = data;
+                this.embedForm.open = false;
+                this.embedMsg = { ok: true, text: '已保存，若维度变化请重建索引' };
+                this.loadConfig();
+            } catch (e) {
+                if (e.message !== 'unauthorized') this.embedMsg = { ok: false, text: e.message };
+            }
+        },
+
+        async activateEmbeddingProfile(id) {
+            try {
+                const data = await this.llmWrite('/api/llm/embedding/active', 'POST', { id });
+                this.llmConfig = data;
+                this.loadConfig();
+            } catch (e) {
+                if (e.message !== 'unauthorized') alert(e.message);
+            }
+        },
+
+        async deleteEmbeddingProfile(id) {
+            if (!confirm('确认删除该嵌入档案？')) return;
+            try {
+                const data = await this.llmWrite('/api/llm/embedding/profiles/' + id, 'DELETE');
+                this.llmConfig = data;
+                this.loadConfig();
+            } catch (e) {
+                if (e.message !== 'unauthorized') alert(e.message);
+            }
+        },
+
+        saveAdminToken() {
+            try { localStorage.setItem('ragAdminToken', this.adminToken || ''); } catch (e) {}
+            this.modelMsg = { ok: true, text: '令牌已保存到本机' };
         },
 
         async loadImports() {

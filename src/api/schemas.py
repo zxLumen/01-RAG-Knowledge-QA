@@ -59,7 +59,11 @@ class StatusResponse(BaseModel):
 
 class ConfigResponse(BaseModel):
     embedding_model: str
+    embedding_provider: str
+    embedding_dim: int
     llm_model: str
+    llm_provider: str
+    llm_protocol: str
     llm_base_url: str
     chunk_size: int
     chunk_overlap: int
@@ -79,6 +83,64 @@ class ModelsResponse(BaseModel):
 
 class ModelSelectRequest(BaseModel):
     model: str
+
+
+class LLMProfileRequest(BaseModel):
+    id: Optional[str] = None
+    name: Optional[str] = None
+    provider: str = "custom"
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    model: str = ""
+    temperature: Optional[float] = None
+
+
+class LLMEmbeddingRequest(BaseModel):
+    id: Optional[str] = None
+    name: Optional[str] = None
+    provider: str = "ollama"
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    model: str = ""
+    dim: Optional[int] = None
+
+
+class LLMTestRequest(BaseModel):
+    id: Optional[str] = None
+    provider: Optional[str] = None
+    base_url: Optional[str] = None
+    api_key: Optional[str] = None
+    model: Optional[str] = None
+    target: str = "chat"
+
+
+class LLMActiveRequest(BaseModel):
+    id: str
+
+
+class LLMProfilePublic(BaseModel):
+    id: str
+    name: str
+    provider: str
+    protocol: str
+    base_url: str
+    model: str
+    temperature: float = 0.0
+    dim: Optional[int] = None
+    has_key: bool = False
+    key_hint: str = ""
+
+
+class LLMConfigResponse(BaseModel):
+    active_id: str
+    profiles: list[LLMProfilePublic]
+    embedding_active_id: str
+    embedding_profiles: list[LLMProfilePublic]
+
+
+class ProvidersResponse(BaseModel):
+    providers: list[dict]
+    embedding_dims: dict
 
 
 class ImportFile(BaseModel):
