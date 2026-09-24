@@ -30,8 +30,8 @@
             <div class="app-logo w-8 h-8 rounded-lg flex items-center justify-center text-white font-bold text-sm">R</div>
             <h1 class="text-lg font-semibold">RAG 知识库问答</h1>
         </div>
-        <div class="flex items-center gap-3 text-sm">
-            <div class="flex items-center gap-1.5">
+        <div class="flex items-center gap-3 text-sm relative">
+            <div class="flex items-center gap-1.5" @click.outside="adminOpen = false">
                 <template x-for="t in themeOptions" :key="t.id">
                     <button type="button"
                         @click="theme = t.id; applyTheme()"
@@ -53,7 +53,20 @@
                 </template>
             </select>
             <button x-show="isAdmin" @click="setActiveTab('models')" class="btn-ghost text-white px-2 py-1 rounded text-xs" title="模型管理">⚙</button>
+            <button x-show="!isAdmin" @click="adminOpen = !adminOpen" class="btn-ghost text-white px-2 py-1 rounded text-xs" title="管理员登录">🔑</button>
+            <button x-show="isAdmin" @click="exitAdmin()" class="btn-ghost text-amber-300 px-2 py-1 rounded text-xs" title="退出管理员">⏻</button>
             <span class="badge-dim" x-text="statusText"></span>
+
+            <div x-show="adminOpen" x-transition class="admin-pop" @click.outside="adminOpen = false">
+                <p class="text-xs text-gray-400 mb-2">输入 ADMIN_TOKEN 进入管理员视角</p>
+                <div class="flex items-center gap-2">
+                    <input x-model="adminToken" type="password" placeholder="ADMIN_TOKEN"
+                           class="input-field flex-1 rounded-lg px-2 py-1.5 text-xs font-mono"
+                           @keydown.enter="loginAdmin()">
+                    <button @click="loginAdmin()" class="btn-send text-white px-3 py-1.5 rounded-lg text-xs font-medium">登录</button>
+                </div>
+                <p x-show="adminMsg" class="text-xs text-red-400 mt-2" x-text="adminMsg"></p>
+            </div>
         </div>
     </header>
 
@@ -376,7 +389,8 @@
         <div class="max-w-2xl mx-auto space-y-6">
             <div class="glass-card rounded-2xl p-6 lift">
                 <h2 class="text-lg font-semibold mb-4">知识库管理</h2>
-                <div class="flex items-center gap-2 mb-5 pb-5 border-b border-gray-700 text-sm">
+                <p x-show="!isAdmin" class="text-xs text-amber-300/80 mb-4">访客为只读模式：集合由系统自动分配，如需管理请点击右上角 🔑 登录管理员。</p>
+                <div x-show="isAdmin" class="flex items-center gap-2 mb-5 pb-5 border-b border-gray-700 text-sm">
                     <span class="text-gray-400">新建集合</span>
                     <div class="input-wrap">
                         <input x-model="newCollectionName" type="text" placeholder="集合名"
@@ -395,7 +409,7 @@
                                   :class="c === currentCollection ? 'font-semibold text-strong' : 'text-gray-300'"
                                   x-text="c"></span>
                             <span x-show="c === currentCollection" class="badge-dim text-xs">当前</span>
-                            <button type="button" x-show="c !== currentCollection"
+                            <button type="button" x-show="isAdmin && c !== currentCollection"
                                 @click="switchCollection(c)" :disabled="collectionSwitching"
                                 class="text-xs px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200 transition disabled:opacity-50">切换</button>
                             <input x-model="renameDraft" :id="'renameInp' + c" type="text"
@@ -405,8 +419,8 @@
                                 @keydown.enter="commitRenameCollection(c)"
                                 @keydown.esc="renamingCollection = null; renameDraft = '';"
                                 @blur="commitRenameCollection(c)">
-                            <button type="button" @click.stop="startRenameCollection(c)" class="dd-rename" title="重命名集合">改名</button>
-                            <button type="button" @click.stop="deleteCollection(c)" class="dd-delete" title="删除集合">删除</button>
+                            <button type="button" x-show="isAdmin" @click.stop="startRenameCollection(c)" class="dd-rename" title="重命名集合">改名</button>
+                            <button type="button" x-show="isAdmin" @click.stop="deleteCollection(c)" class="dd-delete" title="删除集合">删除</button>
                         </div>
                     </template>
                 </div>
@@ -423,7 +437,10 @@
                 <div class="space-y-3 text-sm">
                     <div class="flex justify-between py-2 border-b border-gray-700 items-center">
                         <span class="text-gray-400">集合名称</span>
-                        <div class="relative" @click.outside="collectionOpen = false">
+                        <div x-show="!isAdmin" class="dd-trigger" style="cursor:default">
+                            <span class="dd-label" x-text="statusInfo.collection || '-'"></span>
+                        </div>
+                        <div x-show="isAdmin" class="relative" @click.outside="collectionOpen = false">
                             <button type="button" @click="collectionOpen = !collectionOpen"
                                 :class="collectionOpen ? 'dd-trigger open' : 'dd-trigger'">
                                 <span class="dd-label" x-text="statusInfo.collection || '-'"></span>
@@ -994,6 +1011,7 @@ function app() {
         adminToken: (() => { try { return localStorage.getItem('ragAdminToken') || ''; } catch (e) { return ''; } })(),
         isAdmin: false,
         adminMsg: '',
+        adminOpen: false,
         modelForm: { open: false, id: '', name: '', provider: 'ollama', base_url: '', api_key: '', model: '', temperature: 0, has_key: false, key_hint: '', modelOptions: [], modelFilter: '' },
         embedForm: { open: false, id: '', name: '', provider: 'ollama', base_url: '', api_key: '', model: '', dim: 1024, has_key: false, key_hint: '', modelOptions: [], modelFilter: '' },
         modelMsg: { ok: true, text: '' },
@@ -1077,6 +1095,8 @@ function app() {
                 if (!res.ok) { this.adminMsg = '令牌无效或服务端未设置 ADMIN_TOKEN'; return; }
                 this.isAdmin = true;
                 try { localStorage.setItem('ragAdminToken', token); } catch (e) {}
+                this.adminOpen = false;
+                this.adminMsg = '';
                 this.modelMsg = { ok: true, text: '已进入管理员视角' };
                 this.loadLLMConfig(); this.loadProviders();
                 this.reloadData();

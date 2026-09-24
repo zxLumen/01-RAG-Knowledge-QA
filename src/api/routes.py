@@ -605,7 +605,6 @@ async def upload(
     request: Request,
     response: Response,
     files: list[UploadFile] = File(...),
-    _admin: None = Depends(require_admin),
 ):
     if not settings.demo_mode:
         raise HTTPException(status_code=400, detail="上传功能仅在演示模式下开启")
@@ -663,7 +662,9 @@ async def collections(request: Request, response: Response):
 
 
 @router.post("/collections/switch", response_model=CollectionsResponse)
-async def switch_collection(req: CollectionSwitchRequest):
+async def switch_collection(req: CollectionSwitchRequest, request: Request):
+    if settings.demo_mode and not _is_admin(request):
+        raise HTTPException(status_code=403, detail="访客无权切换集合")
     try:
         set_active_collection(get_client(), req.name)
     except ValueError as e:
@@ -675,7 +676,9 @@ async def switch_collection(req: CollectionSwitchRequest):
 
 
 @router.post("/collections/rename", response_model=CollectionsResponse)
-async def rename_collection(req: CollectionRenameRequest):
+async def rename_collection(req: CollectionRenameRequest, request: Request):
+    if settings.demo_mode and not _is_admin(request):
+        raise HTTPException(status_code=403, detail="访客无权重命名集合")
     try:
         rename_display(req.name, req.new_name)
     except ValueError as e:
@@ -687,7 +690,9 @@ async def rename_collection(req: CollectionRenameRequest):
 
 
 @router.post("/collections/delete", response_model=CollectionsResponse)
-async def remove_collection(req: CollectionSwitchRequest):
+async def remove_collection(req: CollectionSwitchRequest, request: Request):
+    if settings.demo_mode and not _is_admin(request):
+        raise HTTPException(status_code=403, detail="访客无权删除集合")
     client = get_client()
     storage = storage_for_display(req.name)
     existing = list_collections(client)

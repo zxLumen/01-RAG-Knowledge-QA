@@ -277,7 +277,7 @@ input[type="checkbox"]:checked::after {
     transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
 }
 .glass-card.raise {
-    z-index: 50;
+    z-index: 60;
 }
 .glass-card.lift:hover {
     transform: translateY(-1px);
@@ -289,6 +289,20 @@ input[type="checkbox"]:checked::after {
     border-bottom: 1px solid var(--header-border);
     box-shadow: 0 1px 20px rgba(2, 6, 23, 0.35);
     backdrop-filter: blur(12px);
+}
+
+.admin-pop {
+    position: absolute;
+    top: calc(100% + 8px);
+    right: 0;
+    z-index: 60;
+    width: 20rem;
+    background: var(--modal-bg);
+    border: 1px solid var(--modal-border);
+    border-radius: 12px;
+    box-shadow: 0 14px 40px var(--glass-shadow);
+    backdrop-filter: blur(12px);
+    padding: 12px;
 }
 
 .app-logo {
@@ -600,7 +614,7 @@ html[data-theme="light"] .modern-select option { background: #fff; color: #0f172
     position: absolute;
     top: calc(100% + 6px);
     left: 0;
-    z-index: 30;
+    z-index: 60;
     min-width: 100%;
     background: var(--modal-bg);
     border: 1px solid var(--modal-border);
