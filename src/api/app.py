@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from src.api import admin_auth, ui_config, visitor
 from src.api.routes import router
+from src.config import settings
 
 logger = logging.getLogger("rag")
 
@@ -40,6 +41,11 @@ async def _startup() -> None:
         logger.info(
             "管理员密码已设置（qdrant_data/admin.json）；如遗忘，可用 ADMIN_TOKEN "
             "调用 POST /api/admin/reset 重置"
+        )
+    if settings.admin_token and not admin_auth.is_ascii(settings.admin_token):
+        logger.warning(
+            "环境变量 ADMIN_TOKEN 含非 ASCII 字符，无法通过登录页发送（HTTP 请求头限制）；"
+            "请改用纯 ASCII 令牌"
         )
 
 

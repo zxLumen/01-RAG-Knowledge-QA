@@ -48,6 +48,16 @@ def test_set_password_too_short(admin_auth):
         admin_auth.set_password("ab")
 
 
+def test_set_password_rejects_non_ascii(admin_auth):
+    assert admin_auth.is_ascii("Passw0rd!-") is True
+    assert admin_auth.is_ascii("密码密码") is False
+    with pytest.raises(ValueError):
+        admin_auth.set_password("中文密码")
+    # 仍可正常设置 ASCII 密码
+    admin_auth.set_password("ascii-pass")
+    assert admin_auth.verify("ascii-pass") is True
+
+
 def test_password_set_empty_without_env(tmp_path, monkeypatch):
     import src.config as config
 

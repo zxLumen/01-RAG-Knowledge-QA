@@ -74,10 +74,22 @@ def verify(provided: str) -> bool:
         return bool(expected) and hmac.compare_digest(provided, expected)
 
 
+def is_ascii(value: str) -> bool:
+    """True when every character is printable ASCII (0x20-0x7E).
+
+    Admin credentials are sent in the ``X-Admin-Token`` HTTP header, whose value
+    must be Latin-1; anything else makes browsers reject the request before it
+    is sent. Restricting to printable ASCII keeps login working everywhere.
+    """
+    return all(0x20 <= ord(c) <= 0x7E for c in value)
+
+
 def set_password(new_password: str) -> None:
     """Hash and persist a new admin password."""
     if not new_password or len(new_password) < 4:
         raise ValueError("密码至少 4 位")
+    if not is_ascii(new_password):
+        raise ValueError("密码仅支持 ASCII 可见字符（不能含中文等，HTTP 请求头限制）")
     PASSWORD_PATH.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps({"password_hash": _hash_password(new_password)})
     PASSWORD_PATH.write_text(payload, encoding="utf-8")

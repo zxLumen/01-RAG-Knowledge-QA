@@ -64,3 +64,13 @@ def test_reset_backdoor_needs_env_token(client, monkeypatch):
         json={"admin_token": "anything", "new_password": "brandnew"},
     )
     assert res.status_code == 400
+
+
+def test_reset_rejects_non_ascii_password(client):
+    c, admin_auth = client
+    res = c.post(
+        "/api/admin/reset",
+        json={"admin_token": "envtok", "new_password": "中文密码abc"},
+    )
+    assert res.status_code == 400
+    assert "ASCII" in res.json()["detail"]

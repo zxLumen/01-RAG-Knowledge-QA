@@ -262,7 +262,7 @@ export RATE_LIMIT_PER_MINUTE=20
 2. 打开「🔑 管理面板」Tab：未登录显示登录页，输入密码（`POST /api/admin/verify` 校验）；登录后即为模型/嵌入配置页
 3. 之后请求自动带 `X-Admin-Token`，后端识别为管理员：`/api/status`、`/api/files`、`/api/query`、`/api/imports` 等都返回共享/管理员数据；点右上角 ⏻「退出管理员」恢复访客视角
 
-> **修改密码**：管理面板内「修改密码」卡片（`POST /api/admin/password`），改后存于 `qdrant_data/admin.json`（PBKDF2 哈希，文件优先于 `ADMIN_TOKEN`）。删除该文件即回退到环境变量密码。
+> **修改密码**：管理面板内「修改密码」卡片（`POST /api/admin/password`），改后存于 `qdrant_data/admin.json`（PBKDF2 哈希，文件优先于 `ADMIN_TOKEN`）。删除该文件即回退到环境变量密码。密码仅支持 **ASCII 可见字符**：凭据经 `X-Admin-Token` 请求头发送，中文等非 Latin-1 字符会被浏览器拒绝，故设置/登录/修改/重置都会拒绝非 ASCII 密码。
 > **忘记密码（后门）**：`admin.json` 存在时环境变量 `ADMIN_TOKEN` 不再用于登录，但始终可作为重置密钥：登录页「忘记密码？用 ADMIN_TOKEN 重置」，或 `POST /api/admin/reset`，body `{admin_token, new_password}`。重置后新密码生效，后门可反复使用。
 > **默认知识库**：启动时会确保持久化的激活集合存在（不存在则创建空集合），激活选择存于 `qdrant_data/active_collection.json`，重启/重部署不丢失；默认名为 `knowledge_base`。查询不存在的集合会友好提示"没有找到相关文档"而非报错。
 > **全员可见（只读）**：管理员在「知识库管理」勾选集合的「全员可见」→ 访客可在对话中选择并只读查询；在「导入」页勾选目录/文件的「全员可见」→ 访客可见/可读/可导入到自己集合（不可修改、不可删除）。配置存于 `qdrant_data/share_config.json`（`GET|POST /api/share/config`，仅管理员）。
