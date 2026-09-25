@@ -17,8 +17,9 @@ echo "[rag-deploy] RAG_IMAGE_TAG=${IMAGE_TAG} (工作目录: $(pwd))"
 # sudo 默认 env_reset 会清掉变量,用 env 显式传回 compose
 ${SUDO:-} env RAG_IMAGE_TAG="${IMAGE_TAG}" docker compose pull rag
 ${SUDO:-} env RAG_IMAGE_TAG="${IMAGE_TAG}" docker compose up -d
-# 清理不被任何容器引用的旧镜像
-${SUDO:-} docker image prune -af
+# 仅清理悬空镜像(无标签层)。共享宿主上不要用 -a 全局清理,以免误删其他项目
+# 未运行但仍在用的镜像;旧版本 RAG 镜像请按需手动清理。
+${SUDO:-} docker image prune -f
 
 ${SUDO:-} docker compose ps
 echo "[rag-deploy] 完成;健康检查: docker exec rag curl -fsS http://localhost:8000/api/version"
