@@ -16,6 +16,8 @@ services:
     environment:
       # 固定用容器内本地 qdrant(由 rag-data 卷持久化)
       QDRANT_URL: ./qdrant_data
+      # 时区(影响导入记录时间戳与日志)
+      TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - rag-data:/app/qdrant_data
       - rag-uploads:/app/data/visitors
