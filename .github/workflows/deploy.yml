@@ -41,25 +41,31 @@ jobs:
           file: Dockerfile
           push: true
           platforms: linux/amd64
+          build-args: |
+            APP_BUILD=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: |
             ${{ steps.img.outputs.image }}:${{ github.sha }}
             ${{ steps.img.outputs.image }}:latest
 
-      # 公开仓库 Actions 发布的包默认继承 public;此处读回断言,必要时用 zxLumen PAT 兜底
-      - name: Ensure GHCR package is public
+      # 公开仓库 Actions 发布的包默认继承 public;此处读回校验,失败仅告警不阻断构建。
+      # 若 packet 意外为 private,可在仓库 Settings 里手动置 public,或配置 GH_PACKAGES_PAT。
+      - name: Check GHCR package is public (warning only)
         env:
           GH_PACKAGES_PAT: ${{ secrets.GH_PACKAGES_PAT }}
         run: |
           NAME="01-rag-knowledge-qa"
           vis() { GH_TOKEN="$1" gh api "/user/packages/container/${NAME}" --jq .visibility 2>/dev/null || echo ""; }
-          [ -n "$GH_PACKAGES_PAT" ] || { echo "::error::缺少 GH_PACKAGES_PAT"; exit 1; }
+          if [ -z "$GH_PACKAGES_PAT" ]; then
+            echo "::warning::未配置 GH_PACKAGES_PAT,跳过公开性校验(公开仓库的包通常自动 public)。"
+            exit 0
+          fi
           VIS=$(vis "$GH_PACKAGES_PAT")
-          echo "读回(zxLumen PAT): ${VIS}"
+          echo "读回: ${VIS:-未知}"
           if [ "${VIS}" = "public" ]; then echo "已是 public"; exit 0; fi
           GH_TOKEN="$GH_PACKAGES_PAT" gh api -X PATCH "/user/packages/container/${NAME}" \
               -F visibility=public >/dev/null 2>&1 || true
           VIS=$(vis "$GH_PACKAGES_PAT")
-          echo "置公开后: ${VIS}"
-          [ "${VIS}" = "public" ] || { echo "::error::GHCR 包未确认 public(当前 ${VIS:-未知})"; exit 1; }
+          echo "置公开后: ${VIS:-未知}"
+          [ "${VIS}" = "public" ] || echo "::warning::GHCR 包未确认为 public(当前 ${VIS:-未知}),服务器匿名拉取可能失败,请手动检查。"

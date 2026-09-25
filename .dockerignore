@@ -13,6 +13,7 @@ qdrant_data/
 
 # 配置(由环境变量注入)
 .env
+deploy/.env
 
 # 仓库/工具
 .git/
@@ -20,3 +21,7 @@ qdrant_data/
 .github/
 *.md
 .DS_Store
+
+# 构建需要的样例必须进镜像(仓库 data/ 被 gitignore,故单独放 samples/)
+!samples/
+!samples/**

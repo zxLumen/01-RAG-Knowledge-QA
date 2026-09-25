@@ -1,0 +1,41 @@
+# RAG 知识库问答 —— 独立部署编排(与主页分开,但复用主页的 Caddy)
+#
+# 组网:本服务加入主页 Caddy 所在的外部网络(默认 docker_web),
+#       主页 Caddy 按 rag.<域名> 反代到 rag:8000。
+# 更新:CI 构建镜像推 GHCR → 服务器 `RAG_IMAGE_TAG=<sha> ./deploy.sh`。
+#
+# 用法:
+#   1) cp .env.example .env && vim .env
+#   2) RAG_IMAGE_TAG=<git-sha> ./deploy.sh
+services:
+  rag:
+    image: ghcr.io/aleiq/01-rag-knowledge-qa:${RAG_IMAGE_TAG:-latest}
+    container_name: rag
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # 固定用容器内本地 qdrant(由 rag-data 卷持久化)
+      QDRANT_URL: ./qdrant_data
+    volumes:
+      - rag-data:/app/qdrant_data
+      - rag-uploads:/app/data/visitors
+    expose:
+      - "8000"
+    # 2C2G 机器防止 RAG 吃满内存(默认 512m,可按需调大)
+    mem_limit: ${RAG_MEM_LIMIT:-512m}
+    networks:
+      - web
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  rag-data:
+  rag-uploads:
+
+networks:
+  web:
+    external: true
+    name: ${WEB_NETWORK:-docker_web}

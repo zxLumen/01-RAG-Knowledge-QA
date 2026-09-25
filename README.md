@@ -15,7 +15,8 @@
 - **访客隔离（演示模式）**：按 cookie 隔离——每人独立目录与 Qdrant 集合，只能看到自己的文件 + 只读样例；一周不访问自动清理，全局占满 2G 时从最旧访客回收
 - **导入进度**：导入/嵌入进度 SSE 轮询、取消导入
 - **集合管理**：多知识库切换、重命名、删除（本地 sqlite 持久化）
-- **Web UI**：对话/导入/知识库管理/模型/状态/导入记录六个页面，Tab 与会话栏可拖拽排序（顺序本地持久化），明暗主题
+- **Web UI**：对话/导入/导入记录/状态/知识库管理/管理面板六个页面（知识库管理仅管理员可见），Tab 与会话栏可拖拽排序（顺序本地持久化），明暗主题
+- **会话存档与管理**：对话记录自动同步到服务端（`qdrant_data/chats.db`），管理面板「会话管理」可查看、软删除（可恢复）、彻底删除；恢复后对话页面刷新即拉回
 - **可部署 demo**：配置走环境变量或本地 JSON，写操作可用 `ADMIN_TOKEN` 保护，支持按 IP 限流
 
 ## 技术栈
@@ -47,10 +48,12 @@
 │   ├── vectorstore/         # store（写入/集合操作）、embedder、naming
 │   └── config.py            # 配置（.env 驱动）
 ├── static/                  # 前端（index.html + app.css，Alpine.js CDN）
-├── data/                    # 知识库源文件（备忘录/ 等，支持 md/txt/pdf）
-├── qdrant_data/             # 本地向量库持久化（storage, imports.db, 别名）
+├── data/                    # 知识库源文件（运行数据目录，被 gitignore）
+├── samples/                 # 随镜像内置的只读样例文档
+├── qdrant_data/             # 本地向量库持久化（storage, imports.db, chats.db, 别名）
+├── deploy/                  # 服务器部署（docker-compose / deploy.sh / entrypoint / .env.example）
 ├── scripts/                 # 数据构建工具（Go 标准库文档等）
-└── tests/                   # pytest（31 项）
+└── tests/                   # pytest
 ```
 
 ## 安装
@@ -114,16 +117,18 @@ rm -f qdrant_data/.lock                         # 清残留锁
 nohup /usr/bin/python3 run_server.py > /tmp/rag_server.log 2>&1 &
 ```
 
+> `run_server.py` 用 uvicorn `reload=False`：**改了代码必须重启进程**，否则新路由/页面不会生效。重启后用 `curl -s localhost:8000/api/version` 确认服务已是新构建（`APP_BUILD`，CI 为 git sha）；镜像部署由 Watchtower 自动拉取 `:latest`。
+
 ## 使用
 
 ### Web UI
 
 - **💬 对话**：提问 → 流式回答，来源为 `[文件名]`；左侧会话多开、可重命名、拖拽排序
-- **📥 导入**：选择目录/文件导入；同文件重复导入自动跳过；打开「重建」可全量重建当前集合
-- **📖 知识库管理**：文件列表、集合（切换/重命名/删除）、向量点数；集合按创建时间**从新到旧**排列；**访客为只读**（集合由系统分配）
-- **🔑 管理面板**：登录后为多厂商配置档案的新建/编辑/删除/激活、嵌入模型配置；含「修改密码」「主题配置」（勾选开放给访客的主题并排序、设默认）
-- **📊 状态**：集合、点数与模型信息
+- **📥 导入**：选择目录/文件导入；同文件重复导入自动跳过；打开「重建」可全量重建当前集合；勾选文件后可「删除所选」批量删除自己上传的文件（同时移除索引），目录与只读样例不可删；**空目录也会显示**（删除文件不会删除目录）
 - **📚 导入记录**：历史导入会话详情
+- **📊 状态**：集合、点数与模型信息
+- **📖 知识库管理**：文件列表、集合（切换/重命名/删除）、向量点数；集合按创建时间**从新到旧**排列；**仅管理员登录后可见**（访客不显示该 Tab，接口也会拒绝）
+- **🔑 管理面板**：登录后为多厂商配置档案的新建/编辑/删除/激活、嵌入模型配置；含「修改密码」「主题配置」（勾选开放给访客的主题并排序、设默认）
 
 右上角下拉快速切换激活档案；⚙ 进入模型页；🔑 登录/退出管理员；右上角按钮切换明暗主题。
 
@@ -158,8 +163,13 @@ nohup /usr/bin/python3 run_server.py > /tmp/rag_server.log 2>&1 &
 | `GET /api/status` | 状态（演示模式返回访客自己的集合） |
 | `GET|POST /api/models` | 兼容旧接口（模型列表 / 切换当前模型） |
 | `GET /api/files` / `GET /api/files/content` | 已索引文件 / 内容 |
+| `POST /api/files/delete` | 批量删除文件（磁盘 + 索引），body: `{rels: [...]}`；访客仅限自己的上传目录，管理员可删 `data/` 下任意文件；目录与 `data/samples/` 样例跳过并在 `skipped` 返回 |
+| `GET /api/version` | 服务版本与构建标识（`APP_BUILD`，CI 注入 git sha），用于确认服务是否已更新 |
 | `POST /api/collections/switch` · `/rename` · `/delete` | 集合切换 / 重命名 / 删除 |
 | `GET /api/imports` · `GET /api/imports/{id}` | 导入记录列表 / 详情 |
+| `POST /api/chat/sync` | 对话存档同步（每次问答结束自动调用），body: `{session_id, title?, collection?, messages?, deleted?}` |
+| `GET /api/chat/sessions` | 当前访客/管理员自己的会话列表（未删除） |
+| `GET /api/chat/admin/list` · `POST /api/chat/admin/delete` · `POST /api/chat/admin/restore` · `POST /api/chat/admin/hard-delete` | 管理员会话管理：列表 / 软删除 / 恢复 / 彻底删除，body: `{rowid}` |
 
 ## 检索与问答原理
 
@@ -204,6 +214,27 @@ export RATE_LIMIT_PER_MINUTE=20
 - **并发**：本地 Qdrant `path=` 模式适合单实例 demo；高并发可改用 Qdrant server 模式
 - 提示：DeepSeek 等对话 API **没有 embeddings 接口**，嵌入需另选厂商（OpenAI / 智谱 / 通义 / 硅基流动等）
 
+### Docker 部署（推荐，配合已有反向代理）
+
+镜像由 CI 构建推送 GHCR（`ghcr.io/aleiq/01-rag-knowledge-qa:<sha>` / `:latest`，命名空间须与仓库 owner 一致），服务器只 `pull` 不构建。`deploy/` 是独立编排，复用同机已有的 Caddy（按子域名反代）：
+
+```bash
+# 服务器：把 deploy/ 下的 docker-compose.yml、deploy.sh、.env.example 放到 ~/rag
+cd ~/rag
+cp .env.example .env && vim .env         # DEMO_MODE / ADMIN_TOKEN / 模型 key / RAG_MEM_LIMIT 等
+RAG_IMAGE_TAG=<git-sha> ./deploy.sh      # 拉取镜像并启动（不传则用 latest）
+```
+
+- **首次启动即用云端模型**：`.env` 里设 `LLM_PROVIDER=opencode-go`（+ `LLM_API_KEY` 等）与 `EMBEDDING_PROVIDER=siliconflow`（+ `EMBEDDING_API_KEY` 等），首次启动会据此自动生成档案；provider id 保留，故 `x-opencode-session` 等厂商适配照常生效。
+- 容器加入主页 Caddy 所在的外部网络（默认 `docker_web`，可用 `WEB_NETWORK` 改）；在主页 Caddyfile 加：
+  `rag.<域名> { reverse_proxy rag:8000 }`，即可访问 `https://rag.<域名>`。
+- **内存上限**：默认 `RAG_MEM_LIMIT=512m`（2C2G 机器友好）；峰值可结合 `docker stats` 调大，或依赖 swap 兜底。
+- **持久化卷**：`rag-data`（Qdrant 向量、`imports.db`、`chats.db`、`admin.json`、`llm_config.json`、`ui_config.json`、访客状态）、`rag-uploads`（访客上传）；只读样例随镜像内置（仓库 `samples/`）。
+- **非 root 运行**：入口脚本修复卷属主后以 `appuser` 运行；健康检查走 `/api/version`（`/api/status` 在演示模式下会新建访客，故不用）。
+- **反代下限流**：`run_server.py` 已开启 `proxy_headers`，限流按真实客户端 IP（容器仅在内网可达，信任转发头安全）。
+- **更新**：`git push` → CI 构建镜像 → 服务器 `RAG_IMAGE_TAG=<sha> ./deploy.sh`。
+- **备份**：备份 `rag-data` 卷即可（建议纳入主页的备份脚本）。
+
 ### 演示模式（访客隔离）
 
 公开 demo 建议开启访客隔离：
@@ -232,7 +263,8 @@ export RATE_LIMIT_PER_MINUTE=20
 > **修改密码**：管理面板内「修改密码」卡片（`POST /api/admin/password`），改后存于 `qdrant_data/admin.json`（PBKDF2 哈希，文件优先于 `ADMIN_TOKEN`）。删除该文件即回退到环境变量密码。
 > 该密码用于保护模型配置写操作与集合变更（`/api/collections/switch|rename|delete`）。未设置时无法进入管理员视角。
 > **访客上传**走自己的隔离目录，无需管理员令牌（演示模式即可用）。
-> 「🔑 管理面板」对所有人可见，但未登录只显示登录页。访客提问/记录始终走自己的集合，客户端传来的集合名会被忽略；集合切换/重命名/删除对访客一律拒绝（403），知识库管理页为只读。
+> 「🔑 管理面板」对所有人可见，但未登录只显示登录页。「📖 知识库管理」Tab 仅管理员登录后可见。访客提问/记录始终走自己的集合，客户端传来的集合名会被忽略；集合切换/重命名/删除需管理员令牌，未登录一律拒绝。
+> **主题配置**：管理员在「主题配置」中开放的默认主题对新访客生效（首屏由服务端注入，无主题闪烁）；老访客若本地保存的主题仍在开放列表内则保留自己的选择。
 
 ## 数据与存储
 
@@ -243,7 +275,7 @@ export RATE_LIMIT_PER_MINUTE=20
 ## 测试与检查
 
 ```bash
-/usr/bin/python3 -m pytest -q    # 46 passed
+/usr/bin/python3 -m pytest -q    # 69 passed
 ruff check src/
 ```
 
