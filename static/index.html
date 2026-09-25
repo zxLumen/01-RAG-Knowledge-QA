@@ -128,9 +128,10 @@
                             <template x-if="chatCollOpenFor === s.id">
                                 <div class="dd-panel" @click.outside="chatCollOpenFor = null">
                                     <template x-for="c in collections" :key="c">
-                                        <button type="button" @click.stop="s.collection = c; chatCollOpenFor = null; saveChatSessions();"
+                                        <button type="button" @click.stop="s.collection = c; chatCollOpenFor = null; syncChat(s, { silent: true });"
                                             class="dd-item" :class="c === s.collection ? 'on' : ''">
                                             <span class="truncate" x-text="c"></span>
+                                            <span x-show="sharedCollections.includes(c)" class="badge-dim text-[10px] shrink-0" style="color:#22d3ee">共享</span>
                                             <span x-show="c === s.collection">✓</span>
                                         </button>
                                     </template>
@@ -233,10 +234,11 @@
                         </button>
                         <template x-if="collectionOpen">
                             <div class="dd-panel">
-                                <template x-for="c in collections" :key="c">
+                                <template x-for="c in importCollections" :key="c">
                                     <button type="button" @click="switchCollection(c); collectionOpen = false"
                                         class="dd-item" :class="c === currentCollection ? 'on' : ''">
                                         <span class="truncate" x-text="c"></span>
+                                        <span x-show="sharedCollections.includes(c)" class="badge-dim text-[10px] shrink-0" style="color:#22d3ee">共享</span>
                                         <span x-show="c === currentCollection">✓</span>
                                     </button>
                                 </template>
@@ -313,6 +315,11 @@
                             <span class="text-gray-200 truncate" :class="{'font-medium text-gray-100 cursor-pointer hover:underline': row.isDir, 'cursor-pointer hover:underline': !row.isDir}"
                                       @click="!row.isDir && viewFile(row.rel)" x-text="row.name"></span>
                             <span x-show="!row.isDir && row.file.sample" class="badge-dim shrink-0">样例</span>
+                            <span x-show="rowIsShared(row)" class="badge-dim shrink-0" style="color:#22d3ee">共享</span>
+                            <label x-show="isAdmin" class="shrink-0 inline-flex items-center gap-1 text-[11px] text-gray-400 cursor-pointer ml-1"
+                                   title="勾选后所有访客可见并可导入（只读，不可修改）">
+                                <input type="checkbox" :checked="isPathShared(row.rel)" @click.stop="toggleSharePath(row.rel)"> 全员可见
+                            </label>
                             <span class="ml-auto shrink-0 text-gray-400 pl-2 font-medium" :title="row.isDir ? dirDotTitle(row) : ''"
                                   x-text="row.isDir ? dirTailLabel(row) : (row.file.imported ? (row.file.chunks + ' 块') : '')"></span>
                         </div>
@@ -414,6 +421,10 @@
                                   :class="c === currentCollection ? 'font-semibold text-strong' : 'text-gray-300'"
                                   x-text="c"></span>
                             <span x-show="c === currentCollection" class="badge-dim text-xs">当前</span>
+                            <label x-show="isAdmin" class="flex items-center gap-1 text-xs text-gray-400 shrink-0 cursor-pointer"
+                                   title="勾选后所有访客可在对话中选择并只读查询该知识库">
+                                <input type="checkbox" :checked="isCollectionShared(c)" @change="toggleShareCollection(c)"> 全员可见
+                            </label>
                             <button type="button" x-show="isAdmin && c !== currentCollection"
                                 @click="switchCollection(c)" :disabled="collectionSwitching"
                                 class="text-xs px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200 transition disabled:opacity-50">切换</button>
@@ -430,6 +441,8 @@
                     </template>
                 </div>
                 <div x-show="!collections.length" class="text-gray-500 text-sm text-center py-8">暂无集合，请先在下方新建</div>
+                <p x-show="shareMsg" class="text-xs text-green-400 mt-2" x-text="shareMsg"></p>
+                <p class="text-xs text-gray-500 mt-2">「全员可见」的知识库：所有访客可在对话中选择并只读查询。</p>
             </div>
         </div>
     </div>
@@ -533,6 +546,19 @@
                     <button @click="loginAdmin()" class="btn-send text-white px-4 py-2 rounded-lg text-sm font-medium">登录</button>
                 </div>
                 <p x-show="adminMsg" class="text-xs text-red-400" x-text="adminMsg"></p>
+                <button type="button" @click="resetForm.open = !resetForm.open"
+                        class="text-xs text-gray-500 hover:text-gray-300 underline">忘记密码？用 ADMIN_TOKEN 重置</button>
+                <div x-show="resetForm.open" class="space-y-2 pt-1 max-w-sm mx-auto text-left">
+                    <p class="text-xs text-gray-500">用服务器环境变量 ADMIN_TOKEN 作为重置密钥（不依赖已遗忘的密码）。</p>
+                    <input x-model="resetForm.token" type="password" placeholder="ADMIN_TOKEN"
+                           class="input-field rounded-lg px-3 py-2 text-sm font-mono w-full">
+                    <input x-model="resetForm.next" type="password" placeholder="新密码（至少 4 位）"
+                           class="input-field rounded-lg px-3 py-2 text-sm font-mono w-full"
+                           @keydown.enter="resetAdminPassword()">
+                    <button @click="resetAdminPassword()" :disabled="resetForm.busy"
+                            class="btn-send disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-medium w-full">重置并登录</button>
+                    <p x-show="resetForm.msg" class="text-xs" :class="resetForm.ok ? 'text-green-400' : 'text-red-400'" x-text="resetForm.msg"></p>
+                </div>
             </div>
 
             <div x-show="isAdmin" class="space-y-6">
@@ -1051,21 +1077,9 @@ function app() {
         stopClicked: false,
         stickToBottom: true,
         _activeReader: null,
-        chatSessions: (() => {
-            try {
-                const raw = localStorage.getItem('ragChatSessions');
-                const arr = raw ? JSON.parse(raw) : null;
-                if (Array.isArray(arr) && arr.length) {
-                    return arr.map((s) => ({
-                        id: s.id,
-                        title: s.title || '会话',
-                        collection: s.collection || '',
-                        messages: Array.isArray(s.messages) ? s.messages : [],
-                    }));
-                }
-            } catch (e) {}
-            return [{ id: Date.now() + '-' + Math.random().toString(36).slice(2, 8), title: '会话 1', collection: '', messages: [] }];
-        })(),
+        // 会话列表以服务端为唯一来源（按身份隔离），本地仅作当前视图状态。
+        chatSessions: [],
+        chatOwner: '',
         activeChatId: null,
         chatCollOpenFor: null,
         editChatId: null,
@@ -1129,6 +1143,11 @@ function app() {
         isAdmin: false,
         adminMsg: '',
         pwdForm: { old: '', next: '', confirm: '', busy: false, msg: '', ok: true },
+        resetForm: { open: false, token: '', next: '', busy: false, msg: '', ok: true },
+        shareConfig: { collections: [], paths: [] },
+        sharedCollections: [],
+        shareBusy: false,
+        shareMsg: '',
         modelForm: { open: false, id: '', name: '', provider: 'ollama', base_url: '', api_key: '', model: '', temperature: 0, has_key: false, key_hint: '', modelOptions: [], modelFilter: '' },
         embedForm: { open: false, id: '', name: '', provider: 'ollama', base_url: '', api_key: '', model: '', dim: 1024, has_key: false, key_hint: '', modelOptions: [], modelFilter: '' },
         modelMsg: { ok: true, text: '' },
@@ -1158,10 +1177,9 @@ function app() {
             await this.verifyStoredAdmin();
             if (this.activeTab === 'manage' && !this.isAdmin) this.activeTab = 'chat';
             await this.loadCollections();
-            this.ensureChat();
             this.restoreFsExpand();
-            await Promise.all([this.loadStatus(), this.loadConfig(), this.loadVersion(), this.loadLLMConfig(), this.loadProviders(), this.loadFiles(), this.loadImports(), this.loadUiConfig()]);
-            await this.mergeServerChats();
+            await Promise.all([this.loadStatus(), this.loadConfig(), this.loadVersion(), this.loadLLMConfig(), this.loadProviders(), this.loadFiles(), this.loadImports(), this.loadUiConfig(), this.loadShareConfig()]);
+            await this.loadChatSessions();
             await this.resumeIngestIfRunning();
             if (this.restoringImport) {
                 await this.viewSession(sid);
@@ -1223,6 +1241,101 @@ function app() {
             }
         },
 
+        async resetAdminPassword() {
+            const f = this.resetForm;
+            f.msg = '';
+            if (!f.token) { f.ok = false; f.msg = '请填写 ADMIN_TOKEN'; return; }
+            if (!f.next || f.next.length < 4) { f.ok = false; f.msg = '新密码至少 4 位'; return; }
+            f.busy = true;
+            try {
+                const res = await fetch('/api/admin/reset', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ admin_token: f.token, new_password: f.next }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) { f.ok = false; f.msg = data.detail || '重置失败'; return; }
+                this.adminToken = f.next;
+                try { localStorage.setItem('ragAdminToken', f.next); } catch (e) {}
+                this.isAdmin = true;
+                f.ok = true; f.msg = '已重置并登录';
+                f.token = ''; f.next = '';
+                this.loadLLMConfig(); this.loadProviders(); this.loadChatAdmin();
+                this.reloadData(); this.loadChatSessions(); this.loadShareConfig();
+            } catch (e) {
+                f.ok = false; f.msg = '请求失败: ' + e.message;
+            } finally {
+                f.busy = false;
+            }
+        },
+
+        async loadShareConfig() {
+            try {
+                const res = await fetch('/api/share/config', { headers: this.authHeaders() });
+                if (res.ok) {
+                    const data = await res.json();
+                    this.shareConfig = { collections: data.collections || [], paths: data.paths || [] };
+                }
+            } catch (e) { /* 忽略瞬时错误 */ }
+        },
+
+        async saveShareConfig() {
+            this.shareBusy = true;
+            this.shareMsg = '';
+            try {
+                const res = await fetch('/api/share/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+                    body: JSON.stringify({
+                        collections: this.shareConfig.collections,
+                        paths: this.shareConfig.paths,
+                    }),
+                });
+                if (!res.ok) { this.shareMsg = '保存失败 ' + res.status; return; }
+                const data = await res.json();
+                this.shareConfig = { collections: data.collections || [], paths: data.paths || [] };
+                this.shareMsg = '已保存';
+                await this.loadCollections();
+            } catch (e) {
+                this.shareMsg = '保存失败: ' + e.message;
+            } finally {
+                this.shareBusy = false;
+            }
+        },
+
+        isCollectionShared(name) {
+            return (this.shareConfig.collections || []).includes(name);
+        },
+
+        async toggleShareCollection(name) {
+            if (this.isCollectionShared(name)) {
+                this.shareConfig.collections = this.shareConfig.collections.filter((c) => c !== name);
+            } else {
+                this.shareConfig.collections = [...this.shareConfig.collections, name];
+            }
+            await this.saveShareConfig();
+        },
+
+        isPathShared(rel) {
+            const paths = this.shareConfig.paths || [];
+            return paths.some((p) => rel === p || rel.startsWith(p + '/'));
+        },
+
+        async toggleSharePath(rel) {
+            if ((this.shareConfig.paths || []).includes(rel)) {
+                this.shareConfig.paths = this.shareConfig.paths.filter((p) => p !== rel);
+            } else {
+                // 若已有父目录被共享，先取消父目录，避免重复覆盖
+                this.shareConfig.paths = (this.shareConfig.paths || []).filter((p) => !rel.startsWith(p + '/'));
+                this.shareConfig.paths = [...this.shareConfig.paths, rel];
+            }
+            await this.saveShareConfig();
+        },
+
+        rowIsShared(row) {
+            return row.isDir ? this.isPathShared(row.rel) : (row.file && row.file.shared) || this.isPathShared(row.rel);
+        },
+
         async verifyStoredAdmin() {
             const token = (this.adminToken || '').trim();
             if (!token) { this.isAdmin = false; return; }
@@ -1250,6 +1363,8 @@ function app() {
                 this.loadLLMConfig(); this.loadProviders();
                 this.loadChatAdmin();
                 this.reloadData();
+                this.loadChatSessions();
+                this.loadShareConfig();
             } catch (e) {
                 this.adminMsg = '验证失败: ' + e.message;
             }
@@ -1292,7 +1407,6 @@ function app() {
             const next = this.reorderArray(this.chatSessions, this.dragSessionId, target, (s) => s.id);
             if (!next) return;
             this.chatSessions = next;
-            this.saveChatSessions();
         },
 
         activeSession() {
@@ -1303,6 +1417,12 @@ function app() {
 
         get loading() {
             return !!(this.activeSession() && this.activeSession().busy);
+        },
+
+        get importCollections() {
+            // 共享集合对访客只读，不能作为导入目标。
+            if (this.isAdmin) return this.collections;
+            return this.collections.filter((c) => !this.sharedCollections.includes(c));
         },
 
         dirDotStyle(row) {
@@ -1339,16 +1459,35 @@ function app() {
             s.title = name || s.title || '会话';
             this.editChatId = null;
             this.editChatName = '';
-            this.saveChatSessions();
+            this.syncChat(s, { silent: true });
         },
 
-        saveChatSessions() {
-            try { localStorage.setItem('ragChatSessions', JSON.stringify(this.chatSessions)); } catch (e) {}
+        async loadChatSessions() {
+            // 服务端为唯一来源：按当前身份拉取会话并替换本地列表。
+            try {
+                const res = await fetch('/api/chat/sessions', { headers: this.authHeaders() });
+                if (res.ok) {
+                    const data = await res.json();
+                    this.chatOwner = data.owner || '';
+                    this.chatSessions = (data.sessions || []).map((it) => ({
+                        id: it.id,
+                        title: it.title || '会话',
+                        collection: it.collection || '',
+                        messages: Array.isArray(it.messages) ? it.messages : [],
+                        busy: false,
+                    }));
+                }
+            } catch (e) { /* 保留当前列表 */ }
+            this.ensureChat();
+            if (this.activeChatId == null || !this.chatSessions.some((s) => s.id === this.activeChatId)) {
+                this.activeChatId = this.chatSessions[0] ? this.chatSessions[0].id : null;
+            }
+            this.scrollChatBottom();
         },
 
         ensureChat() {
             if (!this.chatSessions.length) {
-                this.chatSessions.push({ id: Date.now() + '-' + Math.random().toString(36).slice(2, 8), title: '会话 1', collection: '', messages: [] });
+                this.chatSessions.push({ id: Date.now() + '-' + Math.random().toString(36).slice(2, 8), title: '会话 1', collection: this.currentCollection || '', messages: [] });
             }
             if (this.activeChatId == null || !this.chatSessions.some((s) => s.id === this.activeChatId)) {
                 this.activeChatId = this.chatSessions[0].id;
@@ -1359,7 +1498,6 @@ function app() {
                     s.collection = this.currentCollection || '';
                 }
             }
-            this.saveChatSessions();
         },
 
         newChat() {
@@ -1369,7 +1507,6 @@ function app() {
             const s = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 8), title: '会话 ' + n, collection: this.currentCollection || '', messages: [] };
             this.chatSessions.push(s);
             this.activeChatId = s.id;
-            this.saveChatSessions();
             this.scrollChatBottom();
         },
 
@@ -1383,7 +1520,6 @@ function app() {
                 this.activeChatId = next ? next.id : null;
             }
             if (!this.chatSessions.length) this.newChat();
-            this.saveChatSessions();
             this.scrollChatBottom();
             // 服务端软删除，保留内容以便管理员恢复
             this.syncChat(gone || { id, title: '会话', collection: '', messages: [] }, { deleted: true });
@@ -1393,7 +1529,6 @@ function app() {
             if (this.activeChatId === id || !this.chatSessions.some((s) => s.id === id)) return;
             this.activeChatId = id;
             this.question = '';
-            this.saveChatSessions();
             this.scrollChatBottom();
         },
 
@@ -1432,33 +1567,6 @@ function app() {
             } catch (e) {
                 if (!opts.silent) console.error('chat sync error', e);
             }
-        },
-
-        async mergeServerChats() {
-            // 把服务端已保存（未删除）且本地还没有的会话并进列表，用于恢复后拉回。
-            try {
-                const res = await fetch('/api/chat/sessions', { headers: this.authHeaders() });
-                if (!res.ok) return;
-                const data = await res.json();
-                const local = new Set(this.chatSessions.map((s) => s.id));
-                const added = [];
-                for (const it of (data.sessions || [])) {
-                    if (local.has(it.id)) continue;
-                    const s = {
-                        id: it.id,
-                        title: it.title || '会话',
-                        collection: it.collection || '',
-                        messages: it.messages || [],
-                        busy: false,
-                    };
-                    this.chatSessions.push(s);
-                    added.push(s);
-                }
-                if (added.length) {
-                    this.ensureChat();
-                    this.saveChatSessions();
-                }
-            } catch (e) { /* 忽略瞬时错误 */ }
         },
 
         async loadChatAdmin() {
@@ -1532,6 +1640,7 @@ function app() {
                 const data = await res.json();
                 this.collections = data.collections || [];
                 this.currentCollection = data.current || '';
+                this.sharedCollections = data.shared || [];
             } catch (e) {
                 console.error(e);
             }
@@ -1597,14 +1706,13 @@ function app() {
             const data = await this.renameCollection(oldName, name);
             if (!data) return;
             for (const s of this.chatSessions) {
-                if (s.collection === oldName) s.collection = name;
+                if (s.collection === oldName) { s.collection = name; this.syncChat(s, { silent: true }); }
             }
             if ((this.statusInfo.collection || '') === oldName) this.statusInfo.collection = name;
             if (this.importCollection === oldName) {
                 this.importCollection = name;
                 this.loadImports();
             }
-            this.saveChatSessions();
         },
 
         async deleteCollection(name) {
@@ -1627,9 +1735,8 @@ function app() {
                 if (this.importCollection === name) this.importCollection = '';
                 if ((this.statusInfo.collection || '') === name) this.statusInfo.collection = '';
                 for (const s of this.chatSessions) {
-                    if (s.collection === name) s.collection = '';
+                    if (s.collection === name) { s.collection = ''; this.syncChat(s, { silent: true }); }
                 }
-                this.saveChatSessions();
                 await this.loadImports();
                 await this.loadStatus();
                 await this.loadFiles();
@@ -1739,7 +1846,6 @@ function app() {
             this.stopRequested = false;
             this.stopClicked = false;
             this._activeReader = null;
-            this.saveChatSessions();
             this.maybeScrollChatBottom();
             this.syncChat(sess, { silent: true });
         },
@@ -2591,6 +2697,7 @@ function app() {
             if (this.activeTab === 'models' || this.activeTab === 'manage') this.activeTab = 'chat';
             this.modelMsg = { ok: true, text: '已退出管理员视角' };
             this.reloadData();
+            this.loadChatSessions();
         },
 
         async reloadData() {
