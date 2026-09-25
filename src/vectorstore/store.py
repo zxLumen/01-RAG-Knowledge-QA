@@ -8,6 +8,7 @@ from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, V
 
 from src.config import settings
 from src.qa.llm_config import embedding_dim
+from src.vectorstore import active
 from src.vectorstore.context import current_collection
 from src.vectorstore.naming import (
     drop_creation,
@@ -70,6 +71,7 @@ def set_active_collection(client: QdrantClient, name: str) -> None:
         register_alias(name, storage)
         record_creation(storage)
         settings.qdrant_collection = storage
+        active.save(storage)
         ensure_collection(client, recreate=False)
 
 

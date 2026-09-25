@@ -168,8 +168,10 @@ nohup /usr/bin/python3 run_server.py > /tmp/rag_server.log 2>&1 &
 | `POST /api/collections/switch` · `/rename` · `/delete` | 集合切换 / 重命名 / 删除 |
 | `GET /api/imports` · `GET /api/imports/{id}` | 导入记录列表 / 详情 |
 | `POST /api/chat/sync` | 对话存档同步（每次问答结束自动调用），body: `{session_id, title?, collection?, messages?, deleted?}` |
-| `GET /api/chat/sessions` | 当前访客/管理员自己的会话列表（未删除） |
+| `GET /api/chat/sessions` | 当前访客/管理员自己的会话列表（未删除），含 `owner` 标识身份 |
 | `GET /api/chat/admin/list` · `POST /api/chat/admin/delete` · `POST /api/chat/admin/restore` · `POST /api/chat/admin/hard-delete` | 管理员会话管理：列表 / 软删除 / 恢复 / 彻底删除，body: `{rowid}` |
+| `GET /api/share/config` · `POST /api/share/config` | 全员可见配置（仅管理员），body: `{collections: [...], paths: [...]}` |
+| `POST /api/admin/reset` | 忘记密码时用环境变量 `ADMIN_TOKEN` 重置，body: `{admin_token, new_password}`（不依赖已遗忘密码） |
 
 ## 检索与问答原理
 
@@ -261,6 +263,10 @@ export RATE_LIMIT_PER_MINUTE=20
 3. 之后请求自动带 `X-Admin-Token`，后端识别为管理员：`/api/status`、`/api/files`、`/api/query`、`/api/imports` 等都返回共享/管理员数据；点右上角 ⏻「退出管理员」恢复访客视角
 
 > **修改密码**：管理面板内「修改密码」卡片（`POST /api/admin/password`），改后存于 `qdrant_data/admin.json`（PBKDF2 哈希，文件优先于 `ADMIN_TOKEN`）。删除该文件即回退到环境变量密码。
+> **忘记密码（后门）**：`admin.json` 存在时环境变量 `ADMIN_TOKEN` 不再用于登录，但始终可作为重置密钥：登录页「忘记密码？用 ADMIN_TOKEN 重置」，或 `POST /api/admin/reset`，body `{admin_token, new_password}`。重置后新密码生效，后门可反复使用。
+> **默认知识库**：启动时会确保持久化的激活集合存在（不存在则创建空集合），激活选择存于 `qdrant_data/active_collection.json`，重启/重部署不丢失；默认名为 `knowledge_base`。查询不存在的集合会友好提示"没有找到相关文档"而非报错。
+> **全员可见（只读）**：管理员在「知识库管理」勾选集合的「全员可见」→ 访客可在对话中选择并只读查询；在「导入」页勾选目录/文件的「全员可见」→ 访客可见/可读/可导入到自己集合（不可修改、不可删除）。配置存于 `qdrant_data/share_config.json`（`GET|POST /api/share/config`，仅管理员）。
+> **会话隐私**：对话记录以服务端为唯一来源并按身份隔离（管理员 `admin` / 各访客 `visitor_<id>`）；登录/退出会重建列表，不再使用浏览器 localStorage。
 > 该密码用于保护模型配置写操作与集合变更（`/api/collections/switch|rename|delete`）。未设置时无法进入管理员视角。
 > **访客上传**走自己的隔离目录，无需管理员令牌（演示模式即可用）。
 > 「🔑 管理面板」对所有人可见，但未登录只显示登录页。「📖 知识库管理」Tab 仅管理员登录后可见。访客提问/记录始终走自己的集合，客户端传来的集合名会被忽略；集合切换/重命名/删除需管理员令牌，未登录一律拒绝。

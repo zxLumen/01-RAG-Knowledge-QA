@@ -11,8 +11,9 @@ from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, Re
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
 
-from src.api import admin_auth, ui_config, visitor
+from src.api import admin_auth, share_config, ui_config, visitor
 from src.api.schemas import (
+    AdminResetRequest,
     ChatAdminListResponse,
     ChatListResponse,
     ChatRowRequest,
@@ -42,6 +43,8 @@ from src.api.schemas import (
     ProvidersResponse,
     QueryCancelRequest,
     QueryRequest,
+    ShareConfigRequest,
+    ShareConfigResponse,
     StatusResponse,
     UIConfigRequest,
     UIConfigResponse,
@@ -64,6 +67,7 @@ from src.qa import cancel as generation_cancel
 from src.qa import llm as llm_client
 from src.qa import llm_config, providers
 from src.qa.chain import answer_question_stream
+from src.vectorstore import active as active_collection
 from src.vectorstore.naming import (
     delete_alias,
     display_name,
@@ -137,6 +141,20 @@ async def admin_change_password(
     return {"ok": True}
 
 
+@router.post("/admin/reset")
+async def admin_reset(req: AdminResetRequest):
+    """恢复入口:用环境变量 ADMIN_TOKEN 重置管理员密码(忘记密码时用)。
+
+    不经过 require_admin:当 admin.json 已存在时它会覆盖 env 回退,遗忘密码将
+    被锁死;此处用仅服务器管理员知道的 ADMIN_TOKEN 作为重置密钥。
+    """
+    try:
+        admin_auth.reset_with_env_token(req.admin_token, req.new_password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"ok": True}
+
+
 _rate_lock = threading.Lock()
 _rate_hits: dict[str, list[float]] = {}
 
@@ -173,6 +191,33 @@ def _visitor_roots(visitor_id: str) -> list[Path]:
     return roots
 
 
+def _data_relative_path(rel: str) -> Path | None:
+    """Resolve a ``data/``-relative path from share config, rejecting escapes."""
+    cwd = Path.cwd().resolve()
+    data_root = (cwd / "data").resolve()
+    try:
+        target = (cwd / rel).resolve()
+    except (OSError, ValueError):
+        return None
+    if not _within(target, data_root):
+        return None
+    return target
+
+
+def _shared_roots() -> list[Path]:
+    roots: list[Path] = []
+    for rel in share_config.shared_paths():
+        path = _data_relative_path(rel)
+        if path is not None:
+            roots.append(path)
+    return roots
+
+
+def _visitor_read_roots(visitor_id: str) -> list[Path]:
+    """Visitor-visible roots: samples + own uploads + admin-shared paths."""
+    return [*_visitor_roots(visitor_id), *_shared_roots()]
+
+
 def _is_admin(request: Request) -> bool:
     """True when a valid admin password is presented (and one is configured)."""
     if not admin_auth.password_set():
@@ -207,8 +252,12 @@ async def query(
 ):
     visitor_scope = visitor_collection(request, response)
     if visitor_scope:
-        # Visitor: always their own collection; ignore any client-supplied name.
-        collection = visitor_scope
+        # Visitor: their own collection by default; admin-shared collections are
+        # read-only and selectable by display name.
+        if req.collection and req.collection in share_config.shared_collections():
+            collection = storage_for_display(req.collection)
+        else:
+            collection = visitor_scope
     elif req.collection:
         collection = storage_for_display(req.collection)
     else:
@@ -262,7 +311,9 @@ async def chat_sync(req: ChatSyncRequest, request: Request, response: Response):
 async def chat_list(request: Request, response: Response):
     owner = _chat_owner(request, response)
     rows = await run_in_threadpool(chat_store.list_for_owner, owner)
-    return ChatListResponse(sessions=[ChatSessionItem(**r) for r in rows])
+    return ChatListResponse(
+        owner=owner, sessions=[ChatSessionItem(**r) for r in rows]
+    )
 
 
 @router.get("/chat/admin/list", response_model=ChatAdminListResponse)
@@ -319,7 +370,7 @@ async def ingest(req: IngestRequest, request: Request, response: Response):
         for_ingest = [req.path]
     if settings.demo_mode and not _is_admin(request):
         vid = resolve_visitor(request, response)
-        allowed = _visitor_roots(vid)
+        allowed = _visitor_read_roots(vid)
         clean = []
         for path in for_ingest:
             resolved = (Path.cwd() / path).resolve()
@@ -329,7 +380,7 @@ async def ingest(req: IngestRequest, request: Request, response: Response):
         if not for_ingest:
             return IngestResponse(
                 status="error", documents=0, chunks=0,
-                error="只能导入样例或你自己上传的文件",
+                error="只能导入样例、共享文件或你自己上传的文件",
             )
     ingest_progress.begin()
     try:
@@ -432,6 +483,18 @@ async def ui_config_get(response: Response):
 @router.post("/ui/config", response_model=UIConfigResponse)
 async def ui_config_set(req: UIConfigRequest, _admin: None = Depends(require_admin)):
     return UIConfigResponse(**ui_config.save(req.model_dump()))
+
+
+@router.get("/share/config", response_model=ShareConfigResponse)
+async def share_config_get(_admin: None = Depends(require_admin)):
+    return ShareConfigResponse(**share_config.load())
+
+
+@router.post("/share/config", response_model=ShareConfigResponse)
+async def share_config_set(
+    req: ShareConfigRequest, _admin: None = Depends(require_admin)
+):
+    return ShareConfigResponse(**share_config.save(req.model_dump()))
 
 
 @router.get("/config", response_model=ConfigResponse)
@@ -619,15 +682,25 @@ async def list_files(request: Request, response: Response):
     collection = visitor_collection(request, response)
     sample_root = (cwd / visitor.SAMPLES_DIR).resolve()
     if settings.demo_mode and not _is_admin(request):
-        roots = _visitor_roots(
-            request.cookies.get(visitor.VISITOR_COOKIE, "")
-        )
+        roots = _visitor_read_roots(request.cookies.get(visitor.VISITOR_COOKIE, ""))
     else:
         roots = [(cwd / "data").resolve()]
+    shared_roots = _shared_roots()
+
+    def _is_shared(path: Path) -> bool:
+        return any(_within(path, root) for root in shared_roots)
 
     disk: dict[str, dict] = {}
     dirs: set[str] = set()
     for root in roots:
+        if root.is_file():
+            resolved = root.resolve()
+            disk[str(resolved)] = {
+                "rel": str(resolved.relative_to(cwd)),
+                "name": root.name,
+                "sample": bool(sample_root and _within(resolved, sample_root)),
+            }
+            continue
         if not root.is_dir():
             continue
         dirs.add(str(root.relative_to(cwd)))
@@ -664,6 +737,7 @@ async def list_files(request: Request, response: Response):
                 "rel": info["rel"],
                 "name": info["name"],
                 "sample": info["sample"],
+                "shared": _is_shared(Path(abs_key)),
                 "imported": imported,
                 "chunks": chunks or 0,
             }
@@ -678,6 +752,7 @@ async def list_files(request: Request, response: Response):
         "root": "data",
         "items": items,
         "dirs": sorted(dirs),
+        "shared_paths": share_config.shared_paths(),
         "missing": missing,
         "summary": {
             "total": len(items),
@@ -693,7 +768,7 @@ async def file_content(rel: str, request: Request, response: Response):
     target = (cwd / rel).resolve()
     if settings.demo_mode and not _is_admin(request):
         vid = request.cookies.get(visitor.VISITOR_COOKIE, "")
-        roots = _visitor_roots(vid)
+        roots = _visitor_read_roots(vid)
     else:
         roots = [(cwd / "data").resolve()]
     if not any(_within(target, root) for root in roots):
@@ -823,12 +898,18 @@ async def upload(
 
 @router.get("/collections", response_model=CollectionsResponse)
 async def collections(request: Request, response: Response):
+    shared = share_config.shared_collections()
     if settings.demo_mode and not _is_admin(request):
         resolve_visitor(request, response)
-        return CollectionsResponse(current="我的知识库", collections=["我的知识库"])
+        return CollectionsResponse(
+            current="我的知识库",
+            collections=["我的知识库", *shared],
+            shared=shared,
+        )
     return CollectionsResponse(
         current=display_name(settings.qdrant_collection),
         collections=[display_name(c) for c in list_collections(get_client())],
+        shared=shared,
     )
 
 
@@ -888,6 +969,7 @@ async def remove_collection(
     delete_collection(client, storage)
     if settings.qdrant_collection == storage:
         settings.qdrant_collection = next(c for c in existing if c != storage)
+        active_collection.save(settings.qdrant_collection)
     return CollectionsResponse(
         current=display_name(settings.qdrant_collection),
         collections=[display_name(c) for c in list_collections(client)],

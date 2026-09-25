@@ -38,6 +38,24 @@ def _visitor_cookie(client: TestClient) -> dict:
     return {"rag_visitor": res.cookies.get("rag_visitor")}
 
 
+def test_chat_sessions_reports_owner(client):
+    jar = _visitor_cookie(client)
+    client.post(
+        "/api/chat/sync",
+        cookies=jar,
+        json={"session_id": "s1", "title": "t", "messages": []},
+    )
+    res = client.get("/api/chat/sessions", cookies=jar)
+    assert res.status_code == 200
+    assert res.json()["owner"] == "visitor_" + jar["rag_visitor"]
+
+    # admin gets its own owner namespace, not the visitor's
+    res = client.get("/api/chat/sessions", headers={"X-Admin-Token": "tok"})
+    assert res.status_code == 200
+    assert res.json()["owner"] == "admin"
+    assert res.json()["sessions"] == []
+
+
 def test_chat_sync_list_soft_delete_restore_roundtrip(client):
     jar = _visitor_cookie(client)
     owner = "visitor_" + jar["rag_visitor"]

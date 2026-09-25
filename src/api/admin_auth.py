@@ -57,6 +57,11 @@ def password_set() -> bool:
     return bool(_read_hash() or settings.admin_token)
 
 
+def stored_password_set() -> bool:
+    """True when a hashed password file exists (env fallback is bypassed)."""
+    return bool(_read_hash())
+
+
 def verify(provided: str) -> bool:
     """Validate a candidate password against the file hash, then env fallback."""
     if not provided:
@@ -85,4 +90,20 @@ def set_password(new_password: str) -> None:
 def change_password(old_password: str, new_password: str) -> None:
     if not verify(old_password):
         raise ValueError("原密码不正确")
+    set_password(new_password)
+
+
+def reset_with_env_token(token: str, new_password: str) -> None:
+    """Recovery backdoor: reset the stored password using the env ADMIN_TOKEN.
+
+    When ``admin.json`` exists, :func:`verify` ignores the env fallback, so a lost
+    password would lock the operator out. The env ``ADMIN_TOKEN`` (a server-side
+    secret only the operator knows) always acts as a reset key here. Raises
+    ``ValueError`` when no env token is configured or the token is wrong.
+    """
+    expected = settings.admin_token or ""
+    if not expected:
+        raise ValueError("服务端未设置 ADMIN_TOKEN，无法使用该重置方式")
+    if not token or not hmac.compare_digest(token, expected):
+        raise ValueError("ADMIN_TOKEN 不正确")
     set_password(new_password)

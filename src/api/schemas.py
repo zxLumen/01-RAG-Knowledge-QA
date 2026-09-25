@@ -214,6 +214,22 @@ class UIConfigResponse(BaseModel):
 class CollectionsResponse(BaseModel):
     current: str
     collections: list[str]
+    shared: list[str] = []
+
+
+class ShareConfigRequest(BaseModel):
+    collections: list[str] = Field(default_factory=list)
+    paths: list[str] = Field(default_factory=list)
+
+
+class ShareConfigResponse(BaseModel):
+    collections: list[str] = Field(default_factory=list)
+    paths: list[str] = Field(default_factory=list)
+
+
+class AdminResetRequest(BaseModel):
+    admin_token: str
+    new_password: str
 
 
 class ChatSyncRequest(BaseModel):
@@ -237,6 +253,7 @@ class ChatSessionItem(BaseModel):
 
 
 class ChatListResponse(BaseModel):
+    owner: str = ""
     sessions: list[ChatSessionItem]
 
 

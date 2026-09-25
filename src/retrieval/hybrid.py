@@ -87,6 +87,11 @@ def search(
     collection = collection_name or current_collection()
     client = get_client()
 
+    # A missing collection (e.g. the admin's default before any import) should
+    # read as "no relevant documents", not raise a retrieval error.
+    if not client.collection_exists(collection):
+        return []
+
     dense_embeddings = get_dense_embeddings()
     query_dense = dense_embeddings.embed_query(query)
 
