@@ -243,6 +243,42 @@ def visitor_collection(request: Request, response: Response) -> str | None:
     return visitor.collection_name(vid)
 
 
+def _visitor_vid(request: Request, response: Response) -> str | None:
+    """Visitor id, or None for admin/global mode. Mints the cookie if needed."""
+    if not settings.demo_mode or _is_admin(request):
+        return None
+    return resolve_visitor(request, response)
+
+
+def _shared_view_for(vid: str | None) -> str | None:
+    """The shared collection display name this visitor is viewing, if any."""
+    if not vid:
+        return None
+    view = visitor.get_view(vid)
+    return view if view and view in share_config.shared_collections() else None
+
+
+def visitor_view_display(request: Request, response: Response) -> str | None:
+    """Shared display name a visitor is currently viewing, else None."""
+    return _shared_view_for(_visitor_vid(request, response))
+
+
+def visitor_read_collection(request: Request, response: Response) -> str | None:
+    """Collection to read from for this request.
+
+    Admin -> None (meaning the admin/default collection). Visitor -> the shared
+    collection they are viewing (read-only), otherwise their own collection.
+    Writes never use this; they always target the visitor's own collection.
+    """
+    vid = _visitor_vid(request, response)
+    if not vid:
+        return None
+    view = _shared_view_for(vid)
+    if view:
+        return storage_for_display(view)
+    return visitor.collection_name(vid)
+
+
 @router.post("/query")
 async def query(
     req: QueryRequest,
@@ -461,10 +497,16 @@ async def ingest_cancel(req: Optional[IngestCancelRequest] = None):
 @router.get("/status", response_model=StatusResponse)
 async def status(request: Request, response: Response):
     client = get_client()
-    collection = visitor_collection(request, response)
+    view = visitor_view_display(request, response)
+    collection = visitor_read_collection(request, response)
     name = collection or settings.qdrant_collection
     info = collection_info(client, collection=name)
-    label = display_name(name) if not collection else "我的知识库"
+    if view:
+        label = view
+    elif collection:
+        label = "我的知识库"
+    else:
+        label = display_name(name)
     if info is None:
         return StatusResponse(collection=label, points_count=None, status="not_found")
     return StatusResponse(
@@ -679,7 +721,7 @@ async def select_model(req: ModelSelectRequest):
 @router.get("/files")
 async def list_files(request: Request, response: Response):
     cwd = Path.cwd().resolve()
-    collection = visitor_collection(request, response)
+    collection = visitor_read_collection(request, response)
     sample_root = (cwd / visitor.SAMPLES_DIR).resolve()
     if settings.demo_mode and not _is_admin(request):
         roots = _visitor_read_roots(request.cookies.get(visitor.VISITOR_COOKIE, ""))
@@ -900,15 +942,41 @@ async def upload(
 async def collections(request: Request, response: Response):
     shared = share_config.shared_collections()
     if settings.demo_mode and not _is_admin(request):
-        resolve_visitor(request, response)
+        vid = resolve_visitor(request, response)
+        view = _shared_view_for(vid)
         return CollectionsResponse(
-            current="我的知识库",
+            current=view or "我的知识库",
             collections=["我的知识库", *shared],
             shared=shared,
         )
     return CollectionsResponse(
         current=display_name(settings.qdrant_collection),
         collections=[display_name(c) for c in list_collections(get_client())],
+        shared=shared,
+    )
+
+
+@router.post("/collections/view", response_model=CollectionsResponse)
+async def view_collection(req: CollectionSwitchRequest, request: Request, response: Response):
+    """Visitor-only: pick a collection to *view* (own or shared), read-only.
+
+    Never mutates the global active collection; stored per visitor so the
+    selection survives reloads. Writes still target the visitor's own collection.
+    """
+    if not (settings.demo_mode and not _is_admin(request)):
+        raise HTTPException(status_code=403, detail="仅演示模式下的访客可切换查看")
+    vid = resolve_visitor(request, response)
+    shared = share_config.shared_collections()
+    name = (req.name or "").strip()
+    if name in shared:
+        visitor.set_view(vid, name)
+    elif name == "我的知识库":
+        visitor.set_view(vid, None)
+    else:
+        raise HTTPException(status_code=400, detail="只能查看我的知识库或管理员共享的知识库")
+    return CollectionsResponse(
+        current=name if name in shared else "我的知识库",
+        collections=["我的知识库", *shared],
         shared=shared,
     )
 
@@ -985,9 +1053,8 @@ async def list_imports(
     collection: Optional[str] = None,
 ):
     if settings.demo_mode and not _is_admin(request):
-        # Visitor: always their own collection; ignore any client-supplied name.
-        vid = request.cookies.get(visitor.VISITOR_COOKIE, "")
-        collection = visitor.collection_name(vid) if visitor.is_valid_id(vid) else ""
+        # Visitor: their own collection, or the shared one they are viewing.
+        collection = visitor_read_collection(request, response) or ""
     else:
         collection = storage_for_display(collection) if collection else settings.qdrant_collection
     sessions = list_sessions(q=q, limit=limit, collection=collection)

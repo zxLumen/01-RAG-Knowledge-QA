@@ -47,6 +47,7 @@ def _load_state() -> dict:
     if not isinstance(raw, dict):
         raw = {}
     raw.setdefault("visitors", {})
+    raw.setdefault("views", {})
     _state = raw
     return _state
 
@@ -83,6 +84,30 @@ def collection_name(visitor_id: str) -> str:
     if not is_valid_id(visitor_id):
         raise ValueError("invalid visitor id")
     return f"visitor_{visitor_id.lower()}"
+
+
+def get_view(visitor_id: str) -> str | None:
+    """The shared collection display name this visitor is currently viewing."""
+    if not is_valid_id(visitor_id):
+        return None
+    with _lock:
+        state = _load_state()
+        value = state.get("views", {}).get(visitor_id.lower())
+    return value if isinstance(value, str) and value else None
+
+
+def set_view(visitor_id: str, name: str | None) -> None:
+    """Persist a visitor's viewed collection (None/empty resets to own)."""
+    if not is_valid_id(visitor_id):
+        return
+    with _lock:
+        state = _load_state()
+        views = state.setdefault("views", {})
+        if name:
+            views[visitor_id.lower()] = name
+        else:
+            views.pop(visitor_id.lower(), None)
+        _save_state()
 
 
 def touch(visitor_id: str) -> None:
@@ -143,6 +168,7 @@ def remove_visitor(visitor_id: str) -> None:
             pass
         state = _load_state()
         state["visitors"].pop(vid, None)
+        state.get("views", {}).pop(vid, None)
         _save_state()
     try:
         from src.chats import store as chat_store

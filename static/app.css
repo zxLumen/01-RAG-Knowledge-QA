@@ -760,3 +760,12 @@ html[data-theme="light"] .header-model option {
 html[data-theme="light"] .header-model:disabled {
     opacity: 0.6;
 }
+
+/* 共享知识库只读提示（主题感知，浅色下用深色文字保证可读） */
+.notice-shared {
+    border: 1px solid var(--glass-border);
+    border-left: 3px solid var(--accent-2);
+    background: var(--badge-bg);
+    color: var(--body-text);
+    border-radius: 10px;
+}

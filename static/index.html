@@ -234,7 +234,7 @@
                         </button>
                         <template x-if="collectionOpen">
                             <div class="dd-panel">
-                                <template x-for="c in importCollections" :key="c">
+                                <template x-for="c in collections" :key="c">
                                     <button type="button" @click="switchCollection(c); collectionOpen = false"
                                         class="dd-item" :class="c === currentCollection ? 'on' : ''">
                                         <span class="truncate" x-text="c"></span>
@@ -247,11 +247,15 @@
                     </div>
                 </div>
 
+                <div x-show="viewingShared" class="notice-shared mb-4 px-3 py-2 text-xs">
+                    当前查看共享知识库「<span x-text="currentCollection"></span>」：仅可查看管理员共享的目录/文件（只读），不能导入、上传或删除。
+                </div>
+
                 <div class="flex items-center justify-between mb-3 gap-3">
                     <h2 class="text-lg font-semibold">文件清单与批量导入</h2>
                     <div class="flex items-center gap-3">
                         <span class="text-sm text-gray-400">已导入 <span class="text-strong" x-text="fsSummary.imported"></span> / <span class="text-strong" x-text="fsSummary.total"></span></span>
-                        <button @click="$refs.uploadInput.click()" :disabled="uploading"
+                        <button x-show="!viewingShared" @click="$refs.uploadInput.click()" :disabled="uploading"
                             class="btn-ghost text-gray-200 rounded-lg px-3 py-1.5 text-xs disabled:opacity-50"
                             x-text="uploading ? '上传中…' : '⬆ 上传文件'"></button>
                         <input x-ref="uploadInput" type="file" multiple accept=".md,.txt,.pdf" class="hidden" @change="uploadFiles($event)">
@@ -267,12 +271,12 @@
                         <button x-show="fsSearch" @click="fsSearch = ''; rebuildTree()"
                                 class="absolute right-1.5 text-gray-500 hover:text-white text-sm leading-none px-1">✕</button>
                     </div>
-                    <button @click="selectUnimported()" class="btn-ghost text-gray-200 rounded-lg px-3 py-1.5">全选未导入</button>
-                    <button @click="clearSelection()" class="btn-ghost text-gray-200 rounded-lg px-3 py-1.5">清空选择</button>
-                    <button x-show="deletableSelected.length" @click="deleteSelected()"
+                    <button x-show="!viewingShared" @click="selectUnimported()" class="btn-ghost text-gray-200 rounded-lg px-3 py-1.5">全选未导入</button>
+                    <button x-show="!viewingShared" @click="clearSelection()" class="btn-ghost text-gray-200 rounded-lg px-3 py-1.5">清空选择</button>
+                    <button x-show="!viewingShared && deletableSelected.length" @click="deleteSelected()"
                             class="text-red-300 border border-red-400/40 hover:bg-red-400/10 rounded-lg px-3 py-1.5"
                             x-text="'🗑 删除所选 (' + deletableSelected.length + ')'"></button>
-                    <div class="flex flex-wrap items-center gap-4 ml-auto">
+                    <div x-show="!viewingShared" class="flex flex-wrap items-center gap-4 ml-auto">
                         <label class="flex items-center gap-1.5 text-gray-400"><input type="checkbox" x-model="ingestRecreate" class="rounded">重建索引</label>
                         <label class="flex items-center gap-1.5 text-gray-400"><input type="checkbox" x-model="ingestDeleteMissing" class="rounded">删除已移除文件的索引</label>
                     </div>
@@ -293,7 +297,7 @@
                             <span x-show="!row.isDir || !row.hasChildren" class="w-4 shrink-0"></span>
 
                             <template x-if="row.isDir">
-                                <span class="inline-flex shrink-0 items-center justify-center w-3.5 h-3.5 rounded border border-gray-500 cursor-pointer select-none"
+                                <span x-show="!viewingShared" class="inline-flex shrink-0 items-center justify-center w-3.5 h-3.5 rounded border border-gray-500 cursor-pointer select-none"
                                       :class="dirSelState(row.rel) === 'all' ? 'check-all' : ''"
                                       @click="toggleDir(row.rel)">
                                     <span x-show="dirSelState(row.rel) === 'all'" class="text-white text-[10px] leading-none">✓</span>
@@ -301,7 +305,7 @@
                                 </span>
                             </template>
                             <template x-if="!row.isDir">
-                                <input type="checkbox" class="shrink-0 rounded" :checked="!!selected[row.rel]" @click="toggleFile(row.rel)">
+                                <input x-show="!viewingShared" type="checkbox" class="shrink-0 rounded" :checked="!!selected[row.rel]" @click="toggleFile(row.rel)">
                             </template>
 
                             <span class="w-2 h-2 shrink-0 rounded-full"
@@ -336,11 +340,13 @@
 
                 <template x-if="missingFiles.length > 0">
                     <div class="mb-3 text-xs text-yellow-500/80">
-                        注意: 以下 <span x-text="missingFiles.length"></span> 个文件已在知识库中，但 data 目录下不存在: <span x-text="missingFiles.join('、')"></span>
+                        注意: <span x-text="missingFiles.length"></span> 个文件已在知识库中但 data 目录下不存在<span
+                            x-text="missingFiles.length > 3 ? '，如 ' + missingFiles.slice(0, 3).join('、') + ' 等' : '：' + missingFiles.join('、')"></span>
                     </div>
                 </template>
 
                 <button
+                    x-show="!viewingShared"
                     @click="doIngest()"
                     :disabled="ingestLoading || selectedCount === 0"
                     class="btn-ingest w-full disabled:opacity-50 text-white py-2.5 rounded-lg text-sm font-medium"
@@ -428,6 +434,9 @@
                             <button type="button" x-show="isAdmin && c !== currentCollection"
                                 @click="switchCollection(c)" :disabled="collectionSwitching"
                                 class="text-xs px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200 transition disabled:opacity-50">切换</button>
+                            <button type="button" x-show="!isAdmin && c !== currentCollection"
+                                @click="switchCollection(c)" :disabled="collectionSwitching"
+                                class="text-xs px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200 transition disabled:opacity-50">查看</button>
                             <input x-model="renameDraft" :id="'renameInp' + c" type="text"
                                 x-show="renamingCollection === c" class="dd-input" style="width: 10rem;"
                                 :disabled="renameBusy"
@@ -456,10 +465,7 @@
                 <div class="space-y-3 text-sm">
                     <div class="flex justify-between py-2 border-b border-gray-700 items-center">
                         <span class="text-gray-400">集合名称</span>
-                        <div x-show="!isAdmin" class="dd-trigger" style="cursor:default">
-                            <span class="dd-label" x-text="statusInfo.collection || '-'"></span>
-                        </div>
-                        <div x-show="isAdmin" class="relative" @click.outside="collectionOpen = false">
+                        <div class="relative" @click.outside="collectionOpen = false">
                             <button type="button" @click="collectionOpen = !collectionOpen"
                                 :class="collectionOpen ? 'dd-trigger open' : 'dd-trigger'">
                                 <span class="dd-label" x-text="statusInfo.collection || '-'"></span>
@@ -471,6 +477,7 @@
                                         <button type="button" @click="switchCollection(c); collectionOpen = false"
                                             class="dd-item" :class="c === statusInfo.collection ? 'on' : ''">
                                             <span x-text="c"></span>
+                                            <span x-show="sharedCollections.includes(c)" class="badge-dim text-[10px] shrink-0" style="color:#22d3ee">共享</span>
                                             <span x-show="c === statusInfo.collection">✓</span>
                                         </button>
                                     </template>
@@ -1439,10 +1446,9 @@ function app() {
             return !!(this.activeSession() && this.activeSession().busy);
         },
 
-        get importCollections() {
-            // 共享集合对访客只读，不能作为导入目标。
-            if (this.isAdmin) return this.collections;
-            return this.collections.filter((c) => !this.sharedCollections.includes(c));
+        get viewingShared() {
+            // 访客正在查看管理员共享的（只读）知识库。
+            return !this.isAdmin && this.sharedCollections.includes(this.currentCollection);
         },
 
         dirDotStyle(row) {
@@ -1670,7 +1676,7 @@ function app() {
             if (!name || this.collectionSwitching || name === this.currentCollection) return;
             this.collectionSwitching = true;
             try {
-                const res = await fetch('/api/collections/switch', {
+                const res = await fetch(this.isAdmin ? '/api/collections/switch' : '/api/collections/view', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
                     body: JSON.stringify({ name }),
@@ -1682,6 +1688,7 @@ function app() {
                 const data = await res.json();
                 this.collections = data.collections || [];
                 this.currentCollection = data.current || '';
+                this.sharedCollections = data.shared || [];
                 this.selected = {};
                 this.newCollectionName = '';
                 this.saveFsExpand();
@@ -2773,7 +2780,7 @@ function app() {
 
         async viewFile(rel) {
             try {
-                const res = await fetch('/api/files/content?rel=' + encodeURIComponent(rel));
+                const res = await fetch('/api/files/content?rel=' + encodeURIComponent(rel), { headers: this.authHeaders() });
                 if (!res.ok) {
                     const err = await res.json();
                     throw new Error(err.detail || '读取失败');

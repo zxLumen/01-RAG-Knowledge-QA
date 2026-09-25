@@ -90,3 +90,58 @@ def test_shared_paths_visible_and_readable_but_not_deletable(client):
     assert res.status_code == 200
     assert res.json()["deleted"] == []
     assert res.json()["skipped"][0]["rel"] == "data/shared.md"
+
+
+def test_admin_reads_non_shared_data_path_in_demo_mode(client):
+    jar = _visitor_cookie(client)
+
+    res = client.get("/api/files/content", headers=ADMIN, params={"rel": "data/own.md"})
+    assert res.status_code == 200
+    assert "私人" in res.json()["content"]
+
+    # same path is outside a visitor's allowed roots
+    res = client.get("/api/files/content", cookies=jar, params={"rel": "data/own.md"})
+    assert res.status_code == 400
+
+
+def test_visitor_collection_view_persists(client):
+    jar = _visitor_cookie(client)
+    client.post(
+        "/api/share/config",
+        headers=ADMIN,
+        json={"collections": ["共享库"], "paths": []},
+    )
+
+    res = client.get("/api/collections", cookies=jar)
+    assert res.json()["current"] == "我的知识库"
+
+    res = client.post(
+        "/api/collections/view", cookies=jar, json={"name": "共享库"}
+    )
+    assert res.status_code == 200
+    assert res.json()["current"] == "共享库"
+
+    # persisted across requests
+    assert client.get("/api/collections", cookies=jar).json()["current"] == "共享库"
+    assert client.get("/api/status", cookies=jar).json()["collection"] == "共享库"
+
+    # back to own collection
+    res = client.post(
+        "/api/collections/view", cookies=jar, json={"name": "我的知识库"}
+    )
+    assert res.json()["current"] == "我的知识库"
+
+    # unknown target rejected
+    res = client.post("/api/collections/view", cookies=jar, json={"name": "nope"})
+    assert res.status_code == 400
+
+
+def test_collection_view_admin_only(client):
+    jar = _visitor_cookie(client)
+    # admin-only switch endpoint rejects visitors
+    res = client.post("/api/collections/switch", cookies=jar, json={"name": "x"})
+    assert res.status_code in (401, 403)
+    # view endpoint rejects admins
+    res = client.post("/api/collections/view", headers=ADMIN, json={"name": "x"})
+    assert res.status_code == 403
+
