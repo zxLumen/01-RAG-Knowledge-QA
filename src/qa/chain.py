@@ -134,6 +134,13 @@ def answer_question_stream(
         # Cancellation closes the upstream connection, which surfaces here as a
         # read error; treat it as a normal stop rather than a failure.
         stopped = cancel.is_cancelled(gen_id)
+        if not stopped:
+            logger.exception(
+                "LLM call failed (provider=%s model=%s base_url=%s)",
+                profile.get("provider"),
+                profile.get("model"),
+                profile.get("base_url"),
+            )
         if not stopped and not full_answer:
             cancel.release(gen_id)
             yield {

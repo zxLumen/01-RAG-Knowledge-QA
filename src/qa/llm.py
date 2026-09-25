@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import uuid
 from collections.abc import Generator
 
 import requests
@@ -21,12 +22,25 @@ from src.qa.llm_config import resolve_key
 REQUEST_TIMEOUT = 300
 OLLAMA_NUM_CTX = 8192
 
+# Identify the client with a real name (providers such as OpenCode Go ask clients
+# not to masquerade as a generic HTTP library).
+APP_USER_AGENT = "rag-knowledge-qa/1.0"
+# Providers that require a stable per-conversation session id for routing/caching.
+_SESSION_HEADER_PROVIDERS = {"opencode", "opencode-go"}
 
-def _headers(profile: dict) -> dict:
+
+def _headers(profile: dict, session_id: str | None = None) -> dict:
     key = resolve_key(profile.get("api_key"))
-    headers = {"Content-Type": "application/json"}
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": APP_USER_AGENT,
+    }
     if key:
         headers["Authorization"] = f"Bearer {key}"
+    if profile.get("provider") in _SESSION_HEADER_PROVIDERS:
+        # OpenCode Go returns 400 MissingSessionID without this header; reusing the
+        # app's chat session id keeps routing and prompt caching stable per chat.
+        headers["x-opencode-session"] = session_id or uuid.uuid4().hex
     return headers
 
 
@@ -108,7 +122,7 @@ def stream_chat(
             resp = requests.post(
                 _endpoint(profile),
                 json=_payload(profile, messages, stream=True),
-                headers=_headers(profile),
+                headers=_headers(profile, gen_id),
                 stream=True,
                 timeout=REQUEST_TIMEOUT,
             )
