@@ -209,12 +209,13 @@ def _source_filter(source: str) -> Filter:
     )
 
 
-def delete_by_source(client: QdrantClient, source: str) -> int:
+def delete_by_source(client: QdrantClient, source: str, collection: str | None = None) -> int:
     """Delete all points whose metadata.source == source. Returns deleted count."""
-    if not client.collection_exists(current_collection()):
+    name = collection or current_collection()
+    if not client.collection_exists(name):
         return 0
     points, _ = client.scroll(
-        collection_name=current_collection(),
+        collection_name=name,
         scroll_filter=_source_filter(source),
         limit=1000,
         with_vectors=True,
@@ -223,7 +224,7 @@ def delete_by_source(client: QdrantClient, source: str) -> int:
         return 0
     with _write_lock:
         client.delete(
-            collection_name=current_collection(),
+            collection_name=name,
             points_selector=Filter(
                 must=[
                     FieldCondition(

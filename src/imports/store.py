@@ -279,6 +279,42 @@ def prune_files(collection: str | None, keep_sources: set[str]) -> int:
         return int(cur.rowcount)
 
 
+def record_deletion(collection: str, rel_paths: list[str]) -> int:
+    """Record manually deleted files as tombstones in the import ledger.
+
+    A synthetic session is created whose file rows carry ``file_md5 = NULL`` and
+    ``status = "deleted"``. Replay (``collection_session_stats``) then drops them
+    from the collection snapshot, and ``latest_md5_by_rel_path`` reports no md5 so
+    a later re-upload of the same file is re-indexed instead of skipped.
+    """
+    sources = [s for s in dict.fromkeys(rel_paths) if s]
+    if not sources:
+        return 0
+    session_id = add_session(
+        "（手动删除）",
+        recreate=False,
+        documents=0,
+        chunks=0,
+        status="ok",
+        collection=collection,
+    )
+    add_files(
+        session_id,
+        [
+            {
+                "filename": Path(s).name,
+                "rel_path": s,
+                "status": "deleted",
+                "chunk_count": 0,
+                "file_size": 0,
+                "file_md5": None,
+            }
+            for s in sources
+        ],
+    )
+    return session_id
+
+
 def collection_session_stats(collection: str | None = None) -> dict[int, dict]:
     """Per-session incremental counts and the collection snapshot (number of
     distinct indexed files/chunks) as of the end of each session. Sessions are
