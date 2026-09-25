@@ -769,3 +769,81 @@ html[data-theme="light"] .header-model:disabled {
     color: var(--body-text);
     border-radius: 10px;
 }
+
+/* ===== 会话选中样式预览（临时，选定后收敛为默认并删除本段） =====
+   通过 URL ?sessiondemo=1 打开右下角切换器预览 a/b/c/d，默认不生效。 */
+
+/* A 柔和描边：不填充，左侧主题色条，文字带一点主题色 → 不再刺眼纯白 */
+html[data-session-demo="a"] .session-item.session-active,
+html[data-session-demo="a"] .session-item.session-active:hover {
+    background: var(--badge-bg);
+    border-color: transparent;
+    border-left: 3px solid var(--accent-1);
+    color: color-mix(in srgb, var(--body-text) 68%, var(--accent-1));
+    font-weight: 600;
+}
+
+/* B 低饱和填充：淡主题底色 + 中性灰字 */
+html[data-session-demo="b"] .session-item.session-active,
+html[data-session-demo="b"] .session-item.session-active:hover {
+    background: color-mix(in srgb, var(--accent-1) 15%, transparent);
+    border-color: color-mix(in srgb, var(--accent-1) 38%, transparent);
+    border-left: 3px solid color-mix(in srgb, var(--accent-1) 70%, transparent);
+    color: var(--badge-text);
+    font-weight: 500;
+}
+
+/* C 主题色文字：底几乎不填，用主题色文字区分（最不刺眼） */
+html[data-session-demo="c"] .session-item.session-active,
+html[data-session-demo="c"] .session-item.session-active:hover {
+    background: var(--badge-bg);
+    border-color: color-mix(in srgb, var(--accent-2) 45%, transparent);
+    color: var(--accent-2);
+    font-weight: 600;
+}
+
+/* D 深色卡片高亮：深底 + 柔和浅蓝字，兼顾氛围与可读 */
+html[data-session-demo="d"] .session-item.session-active,
+html[data-session-demo="d"] .session-item.session-active:hover {
+    background: color-mix(in srgb, var(--accent-1) 24%, var(--glass-bg-b));
+    border-color: color-mix(in srgb, var(--accent-1) 45%, transparent);
+    border-left: 3px solid var(--accent-2);
+    color: color-mix(in srgb, #ffffff 72%, var(--accent-2));
+    font-weight: 600;
+}
+html[data-theme="light"][data-session-demo="d"] .session-item.session-active,
+html[data-theme="light"][data-session-demo="d"] .session-item.session-active:hover {
+    background: color-mix(in srgb, var(--accent-1) 12%, #ffffff);
+    color: color-mix(in srgb, var(--body-text) 76%, var(--accent-1));
+}
+
+/* 预览切换器（仅 ?sessiondemo 时显示） */
+.sd-panel {
+    position: fixed;
+    right: 16px;
+    bottom: 16px;
+    z-index: 9999;
+    display: none;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 12px;
+    background: var(--modal-solid);
+    border: 1px solid var(--modal-border);
+    box-shadow: 0 10px 30px var(--glass-shadow);
+    color: var(--body-text);
+    font-size: 12px;
+}
+.sd-panel.on { display: flex; }
+.sd-panel button {
+    border: 1px solid var(--badge-border);
+    background: var(--badge-bg);
+    color: inherit;
+    border-radius: 8px;
+    padding: 3px 9px;
+    cursor: pointer;
+}
+.sd-panel button.on {
+    background: var(--accent-soft);
+    border-color: var(--accent-1);
+}
