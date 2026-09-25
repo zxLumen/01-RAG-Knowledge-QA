@@ -216,7 +216,7 @@ export RATE_LIMIT_PER_MINUTE=20
 
 ### Docker 部署（推荐，配合已有反向代理）
 
-镜像由 CI 构建推送 GHCR（`ghcr.io/aleiq/01-rag-knowledge-qa:<sha>` / `:latest`，命名空间须与仓库 owner 一致），服务器只 `pull` 不构建。`deploy/` 是独立编排，复用同机已有的 Caddy（按子域名反代）：
+镜像由 CI 构建推送 GHCR（`ghcr.io/zxlumen/01-rag-knowledge-qa:<sha>` / `:latest`，命名空间须与仓库 owner 一致），服务器只 `pull` 不构建。`deploy/` 是独立编排，复用同机已有的 Caddy（按子域名反代）：
 
 ```bash
 # 服务器：把 deploy/ 下的 docker-compose.yml、deploy.sh、.env.example 放到 ~/rag

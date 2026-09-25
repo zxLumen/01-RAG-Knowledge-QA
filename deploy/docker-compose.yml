@@ -9,7 +9,7 @@
 #   2) RAG_IMAGE_TAG=<git-sha> ./deploy.sh
 services:
   rag:
-    image: ghcr.io/aleiq/01-rag-knowledge-qa:${RAG_IMAGE_TAG:-latest}
+    image: ghcr.io/zxlumen/01-rag-knowledge-qa:${RAG_IMAGE_TAG:-latest}
     container_name: rag
     restart: unless-stopped
     env_file: .env
