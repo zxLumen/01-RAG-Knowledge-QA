@@ -397,12 +397,12 @@
         </div>
     </div>
 
-    <!-- Manage Tab（仅管理员可见） -->
-    <div x-show="activeTab === 'manage' && isAdmin" class="flex-1 overflow-y-auto px-6 py-6">
+    <!-- Manage Tab（管理员可管理；访客只读，仅见自己的与全员可见的集合） -->
+    <div x-show="activeTab === 'manage'" class="flex-1 overflow-y-auto px-6 py-6">
         <div class="max-w-2xl mx-auto space-y-6">
             <div class="glass-card rounded-2xl p-6 lift">
                 <h2 class="text-lg font-semibold mb-4">知识库管理</h2>
-                <div class="flex items-center gap-2 mb-5 pb-5 border-b border-gray-700 text-sm">
+                <div x-show="isAdmin" class="flex items-center gap-2 mb-5 pb-5 border-b border-gray-700 text-sm">
                     <span class="text-gray-400">新建集合</span>
                     <div class="input-wrap">
                         <input x-model="newCollectionName" type="text" placeholder="集合名"
@@ -440,9 +440,10 @@
                         </div>
                     </template>
                 </div>
-                <div x-show="!collections.length" class="text-gray-500 text-sm text-center py-8">暂无集合，请先在下方新建</div>
+                <div x-show="!collections.length" class="text-gray-500 text-sm text-center py-8">暂无可见的知识库</div>
+                <p x-show="!isAdmin" class="text-xs text-gray-500 mt-2">以上为“我的知识库”和管理员共享给全员的只读知识库。</p>
                 <p x-show="shareMsg" class="text-xs text-green-400 mt-2" x-text="shareMsg"></p>
-                <p class="text-xs text-gray-500 mt-2">「全员可见」的知识库：所有访客可在对话中选择并只读查询。</p>
+                <p x-show="isAdmin" class="text-xs text-gray-500 mt-2">「全员可见」的知识库：所有访客可在对话中选择并只读查询。</p>
             </div>
         </div>
     </div>
@@ -1175,7 +1176,6 @@ function app() {
             const sid = sessionStorage.getItem('ragImportSession');
             this.restoringImport = !!(sid && sessionStorage.getItem('ragTab') === 'imports');
             await this.verifyStoredAdmin();
-            if (this.activeTab === 'manage' && !this.isAdmin) this.activeTab = 'chat';
             await this.loadCollections();
             this.restoreFsExpand();
             await Promise.all([this.loadStatus(), this.loadConfig(), this.loadVersion(), this.loadLLMConfig(), this.loadProviders(), this.loadFiles(), this.loadImports(), this.loadUiConfig(), this.loadShareConfig()]);
@@ -1208,10 +1208,10 @@ function app() {
         },
 
         setActiveTab(tab) {
-            if (tab === 'manage' && !this.isAdmin) return;
             sessionStorage.setItem('ragTab', tab);
             this.activeTab = tab;
             if (tab === 'imports') this.loadImports();
+            if (tab === 'manage') this.loadCollections();
             if (tab === 'models') { this.loadLLMConfig(); this.loadProviders(); if (this.isAdmin) this.loadChatAdmin(); }
         },
 
@@ -1903,7 +1903,7 @@ function app() {
             try {
                 const res = await fetch('/api/ingest', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
                     body: JSON.stringify({
                         paths,
                         recreate: this.ingestRecreate,
@@ -1927,6 +1927,7 @@ function app() {
                 this.selected = {};
                 await this.loadStatus();
                 await this.loadFiles();
+                await this.loadImports();
             } catch (e) {
                 this.ingestResult = { status: 'error', error: e.message };
             }
@@ -2379,7 +2380,7 @@ function app() {
         },
 
         get visibleTabs() {
-            return this.tabs.filter((t) => t !== 'manage' || this.isAdmin);
+            return this.tabs;
         },
 
         get visibleThemeOptions() {
