@@ -6,7 +6,22 @@
     <title>RAG 知识库问答</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="/app.css">
-    <script>document.documentElement.dataset.theme = (function () { try { return localStorage.getItem('ragTheme') || 'default'; } catch (e) { return 'default'; } })();</script>
+    <style>html:not(.theme-ready) body { visibility: hidden; }</style>
+    <script>
+        (function () {
+            var ready = function () { document.documentElement.classList.add('theme-ready'); };
+            var cfg = null;
+            try { cfg = JSON.parse('__UI_CONFIG__'); } catch (e) { cfg = null; }
+            var stored = null;
+            try { stored = localStorage.getItem('ragTheme'); } catch (e) {}
+            var theme = (cfg && cfg.themes && stored && cfg.themes.indexOf(stored) !== -1)
+                ? stored
+                : ((cfg && cfg.default_theme) || 'default');
+            document.documentElement.dataset.theme = theme;
+            if (cfg) ready();
+            setTimeout(ready, 1500);
+        })();
+    </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
     <style>
@@ -32,7 +47,7 @@
         </div>
         <div class="flex items-center gap-3 text-sm relative">
             <div class="flex items-center gap-1.5">
-                <template x-for="t in themeOptions" :key="t.id">
+                <template x-for="t in visibleThemeOptions" :key="t.id">
                     <button type="button"
                         @click="theme = t.id; applyTheme()"
                         :title="t.name"
@@ -129,7 +144,7 @@
 
         <div class="flex-1 flex flex-col overflow-hidden">
             <!-- Messages -->
-            <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4" x-ref="chatBox">
+            <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4" x-ref="chatBox" @scroll.passive="onChatScroll">
                 <template x-if="activeSession().messages.length === 0">
                     <div class="hero-glow flex flex-col items-center justify-center h-full text-gray-500">
                         <div class="w-20 h-20 rounded-full bg-gradient-to-br from-blue-500/20 to-cyan-400/20 border border-blue-400/20 flex items-center justify-center text-4xl mb-4">🤖</div>
@@ -252,6 +267,9 @@
                     </div>
                     <button @click="selectUnimported()" class="btn-ghost text-gray-200 rounded-lg px-3 py-1.5">全选未导入</button>
                     <button @click="clearSelection()" class="btn-ghost text-gray-200 rounded-lg px-3 py-1.5">清空选择</button>
+                    <button x-show="deletableSelected.length" @click="deleteSelected()"
+                            class="text-red-300 border border-red-400/40 hover:bg-red-400/10 rounded-lg px-3 py-1.5"
+                            x-text="'🗑 删除所选 (' + deletableSelected.length + ')'"></button>
                     <div class="flex flex-wrap items-center gap-4 ml-auto">
                         <label class="flex items-center gap-1.5 text-gray-400"><input type="checkbox" x-model="ingestRecreate" class="rounded">重建索引</label>
                         <label class="flex items-center gap-1.5 text-gray-400"><input type="checkbox" x-model="ingestDeleteMissing" class="rounded">删除已移除文件的索引</label>
@@ -267,10 +285,10 @@
                     <template x-for="row in fsTreeRows" :key="row.rel">
                         <div class="flex items-center gap-2 py-1 px-1 hover:bg-gray-700/40 text-xs"
                              :style="'padding-left:' + (row.depth * 16 + 10) + 'px'">
-                            <button x-show="row.isDir" @click="toggleExpand(row.rel)" class="w-4 shrink-0 text-center text-gray-500 hover:text-white">
+                            <button x-show="row.isDir && row.hasChildren" @click="toggleExpand(row.rel)" class="w-4 shrink-0 text-center text-gray-500 hover:text-white">
                                 <span x-text="row.expanded ? '▾' : '▸'"></span>
                             </button>
-                            <span x-show="!row.isDir" class="w-4 shrink-0"></span>
+                            <span x-show="!row.isDir || !row.hasChildren" class="w-4 shrink-0"></span>
 
                             <template x-if="row.isDir">
                                 <span class="inline-flex shrink-0 items-center justify-center w-3.5 h-3.5 rounded border border-gray-500 cursor-pointer select-none"
@@ -372,13 +390,12 @@
         </div>
     </div>
 
-    <!-- Manage Tab -->
-    <div x-show="activeTab === 'manage'" class="flex-1 overflow-y-auto px-6 py-6">
+    <!-- Manage Tab（仅管理员可见） -->
+    <div x-show="activeTab === 'manage' && isAdmin" class="flex-1 overflow-y-auto px-6 py-6">
         <div class="max-w-2xl mx-auto space-y-6">
             <div class="glass-card rounded-2xl p-6 lift">
                 <h2 class="text-lg font-semibold mb-4">知识库管理</h2>
-                <p x-show="!isAdmin" class="text-xs text-amber-300/80 mb-4">访客为只读模式：集合由系统自动分配，如需管理请点击右上角 🔑 登录管理员。</p>
-                <div x-show="isAdmin" class="flex items-center gap-2 mb-5 pb-5 border-b border-gray-700 text-sm">
+                <div class="flex items-center gap-2 mb-5 pb-5 border-b border-gray-700 text-sm">
                     <span class="text-gray-400">新建集合</span>
                     <div class="input-wrap">
                         <input x-model="newCollectionName" type="text" placeholder="集合名"
@@ -485,14 +502,18 @@
                         <span class="text-gray-400">Top K</span>
                         <span x-text="configInfo.top_k || '-'"></span>
                     </div>
-                    <div class="flex justify-between py-2">
+                    <div class="flex justify-between py-2 border-b border-gray-700">
                         <span class="text-gray-400">Qdrant</span>
                         <span class="font-mono text-xs" x-text="configInfo.qdrant_url || '-'"></span>
+                    </div>
+                    <div class="flex justify-between py-2">
+                        <span class="text-gray-400">服务版本</span>
+                        <span class="font-mono text-xs" x-text="versionInfo.version ? (versionInfo.version + ' · ' + (versionInfo.build || 'dev').slice(0, 7)) : '-'"></span>
                     </div>
                 </div>
             </div>
 
-            <button @click="loadStatus(); loadConfig(); loadLLMConfig()" class="btn-ghost text-white px-4 py-2 rounded-lg text-sm">
+            <button @click="loadStatus(); loadConfig(); loadLLMConfig(); loadVersion()" class="btn-ghost text-white px-4 py-2 rounded-lg text-sm">
                 🔄 刷新
             </button>
         </div>
@@ -726,7 +747,7 @@
                 <h2 class="text-lg font-semibold mb-1">主题配置</h2>
                 <p class="text-xs text-gray-400 mb-4">勾选要开放给访客的主题，并用 ↑↓ 调整显示顺序；「默认」用于首次访问。</p>
                 <div class="space-y-2">
-                    <template x-for="(t, i) in uiConfig.themes" :key="t">
+                    <template x-for="(t, i) in themeRows" :key="t">
                         <div class="flex items-center gap-3 border border-gray-700/50 rounded-xl px-4 py-2">
                             <input type="checkbox" :checked="themeEnabled[t]" @change="toggleTheme(t, $event.target.checked)">
                             <span class="theme-swatch" :style="'background:' + gradFor(t)"></span>
@@ -734,7 +755,7 @@
                             <span x-show="uiConfig.default_theme === t" class="badge-dim text-xs">默认</span>
                             <button type="button" @click="setDefaultTheme(t)" class="text-xs px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-gray-200">设为默认</button>
                             <button type="button" @click="moveTheme(i, -1)" :disabled="i === 0" class="dd-rename disabled:opacity-30" title="上移">↑</button>
-                            <button type="button" @click="moveTheme(i, 1)" :disabled="i === uiConfig.themes.length - 1" class="dd-rename disabled:opacity-30" title="下移">↓</button>
+                            <button type="button" @click="moveTheme(i, 1)" :disabled="i === themeRows.length - 1" class="dd-rename disabled:opacity-30" title="下移">↓</button>
                         </div>
                     </template>
                 </div>
@@ -744,6 +765,50 @@
                     <p x-show="uiMsg" class="text-xs" :class="uiOk ? 'text-green-400' : 'text-red-400'" x-text="uiMsg"></p>
                 </div>
                 <p x-show="!uiConfig.themes.some(t => themeEnabled[t])" class="text-xs text-amber-300/80 mt-2">至少勾选一个主题后保存。</p>
+            </div>
+
+            <!-- 会话管理 -->
+            <div class="glass-card rounded-2xl p-6">
+                <div class="flex items-center justify-between mb-3">
+                    <div>
+                        <h2 class="text-lg font-semibold">会话管理</h2>
+                        <p class="text-xs text-gray-400 mt-1">对话记录的服务端存档。删除为软删除（可恢复）；彻底删除不可恢复。恢复后，对话页面刷新即可拉回。</p>
+                    </div>
+                    <button @click="loadChatAdmin()" :disabled="chatAdminLoading"
+                            class="btn-ghost text-white px-3 py-1.5 rounded text-xs disabled:opacity-50" x-text="chatAdminLoading ? '刷新中…' : '刷新'"></button>
+                </div>
+                <p x-show="chatAdminMsg.text" class="text-xs mb-2" :class="chatAdminMsg.ok ? 'text-green-400' : 'text-red-400'" x-text="chatAdminMsg.text"></p>
+                <template x-if="!chatAdmin.length && chatAdminLoading === false">
+                    <div class="text-gray-500 text-sm py-6 text-center">暂无对话记录（用户在对话页发过消息后会自动存档）</div>
+                </template>
+                <div x-show="chatAdmin.length" class="space-y-2 max-h-[22rem] overflow-y-auto pr-1">
+                    <template x-for="s in chatAdmin" :key="s.rowid">
+                        <div class="flex items-center gap-3 border border-gray-700/50 rounded-xl px-4 py-2.5">
+                            <div class="min-w-0 flex-1">
+                                <div class="flex items-center gap-2">
+                                    <span class="font-medium truncate" x-text="s.title || '（未命名）'"></span>
+                                    <span class="badge-dim text-xs shrink-0" x-text="s.deleted ? '已删除' : '正常'"></span>
+                                    <span class="badge-dim text-xs shrink-0" x-text="chatMsgCount(s) + ' 条消息'"></span>
+                                </div>
+                                <div class="text-xs text-gray-500 truncate">
+                                    <span class="text-gray-400" x-text="chatOwnerLabel(s.owner)"></span>
+                                    <span class="mx-1">·</span>
+                                    <span x-text="s.updated_at"></span>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-1.5 shrink-0">
+                                <button @click="chatView = s" class="btn-ghost text-white px-2.5 py-1.5 rounded text-xs">查看</button>
+                                <template x-if="s.deleted">
+                                    <button @click="chatAdminRestore(s)" class="btn-ghost text-green-300 px-2.5 py-1.5 rounded text-xs">恢复</button>
+                                </template>
+                                <template x-if="!s.deleted">
+                                    <button @click="chatAdminDelete(s, false)" class="btn-ghost text-amber-300 px-2.5 py-1.5 rounded text-xs">删除</button>
+                                </template>
+                                <button @click="chatAdminDelete(s, true)" class="btn-ghost text-red-300 px-2.5 py-1.5 rounded text-xs">彻底删除</button>
+                            </div>
+                        </div>
+                    </template>
+                </div>
             </div>
             </div>
         </div>
@@ -931,6 +996,20 @@
             <div class="px-5 py-4 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed" x-text="fileModal.content"></div>
         </div>
     </div>
+    <!-- Chat View Modal -->
+    <div x-show="chatView" class="modal-backdrop" @click.self="chatView = null">
+        <div class="modal-card w-full max-w-2xl max-h-[80vh] flex flex-col fade-in">
+            <div class="flex items-center justify-between px-5 py-3 border-b border-gray-700 shrink-0">
+                <div class="flex items-center gap-2 text-sm min-w-0">
+                    <span class="text-gray-400 shrink-0">会话: </span>
+                    <span class="font-medium truncate" x-text="chatView ? (chatView.title || '（未命名）') : ''"></span>
+                    <span class="badge-dim text-xs shrink-0" x-show="chatView && chatView.deleted">已删除</span>
+                </div>
+                <button @click="chatView = null" class="text-gray-400 hover:text-white text-lg leading-none px-1 shrink-0">✕</button>
+            </div>
+            <div class="px-5 py-4 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed" x-text="chatView ? chatViewText(chatView) : ''"></div>
+        </div>
+    </div>
 
 </div>
 
@@ -951,9 +1030,9 @@ function app() {
         uiBusy: false,
         uiMsg: '',
         uiOk: true,
-        activeTab: ['chat', 'ingest', 'manage', 'models', 'status', 'imports'].includes(savedTab) ? savedTab : 'chat',
+        activeTab: ['chat', 'ingest', 'imports', 'status', 'manage', 'models'].includes(savedTab) ? savedTab : 'chat',
         tabs: (() => {
-            const def = ['chat', 'ingest', 'manage', 'models', 'status', 'imports'];
+            const def = ['chat', 'ingest', 'imports', 'status', 'manage', 'models'];
             try {
                 const saved = JSON.parse(localStorage.getItem('ragTabOrder') || '[]');
                 if (Array.isArray(saved)) {
@@ -970,6 +1049,7 @@ function app() {
         question: '',
         stopRequested: false,
         stopClicked: false,
+        stickToBottom: true,
         _activeReader: null,
         chatSessions: (() => {
             try {
@@ -1004,6 +1084,7 @@ function app() {
         lastProgressKey: null,
         lastProgressTs: 0,
         fsItems: [],
+        fsDirs: [],
         fsExpanded: {},
         fsExpandCache: (() => {
             try { return JSON.parse(localStorage.getItem('ragFsExpand') || '{}'); }
@@ -1038,6 +1119,7 @@ function app() {
 
         statusInfo: {},
         configInfo: {},
+        versionInfo: {},
         llmModels: [],
         modelBusy: false,
         llmConfig: { active_id: '', profiles: [], embedding_active_id: '', embedding_profiles: [] },
@@ -1060,6 +1142,10 @@ function app() {
         sourceModal: { open: false, filename: '', score: null, html: '' },
         fileModal: { open: false, filename: '', content: '' },
         restoringImport: false,
+        chatAdmin: [],
+        chatAdminLoading: false,
+        chatAdminMsg: { ok: true, text: '' },
+        chatView: null,
 
         get statusText() {
             const n = this.statusInfo.points_count;
@@ -1070,10 +1156,12 @@ function app() {
             const sid = sessionStorage.getItem('ragImportSession');
             this.restoringImport = !!(sid && sessionStorage.getItem('ragTab') === 'imports');
             await this.verifyStoredAdmin();
+            if (this.activeTab === 'manage' && !this.isAdmin) this.activeTab = 'chat';
             await this.loadCollections();
             this.ensureChat();
             this.restoreFsExpand();
-            await Promise.all([this.loadStatus(), this.loadConfig(), this.loadLLMConfig(), this.loadProviders(), this.loadFiles(), this.loadImports(), this.loadUiConfig()]);
+            await Promise.all([this.loadStatus(), this.loadConfig(), this.loadVersion(), this.loadLLMConfig(), this.loadProviders(), this.loadFiles(), this.loadImports(), this.loadUiConfig()]);
+            await this.mergeServerChats();
             await this.resumeIngestIfRunning();
             if (this.restoringImport) {
                 await this.viewSession(sid);
@@ -1102,10 +1190,11 @@ function app() {
         },
 
         setActiveTab(tab) {
+            if (tab === 'manage' && !this.isAdmin) return;
             sessionStorage.setItem('ragTab', tab);
             this.activeTab = tab;
             if (tab === 'imports') this.loadImports();
-            if (tab === 'models') { this.loadLLMConfig(); this.loadProviders(); }
+            if (tab === 'models') { this.loadLLMConfig(); this.loadProviders(); if (this.isAdmin) this.loadChatAdmin(); }
         },
 
         async changePassword() {
@@ -1159,6 +1248,7 @@ function app() {
                 this.adminMsg = '';
                 this.modelMsg = { ok: true, text: '已进入管理员视角' };
                 this.loadLLMConfig(); this.loadProviders();
+                this.loadChatAdmin();
                 this.reloadData();
             } catch (e) {
                 this.adminMsg = '验证失败: ' + e.message;
@@ -1286,6 +1376,7 @@ function app() {
         deleteChat(id) {
             const i = this.chatSessions.findIndex((s) => s.id === id);
             if (i < 0) return;
+            const gone = this.chatSessions[i];
             this.chatSessions.splice(i, 1);
             if (this.activeChatId === id) {
                 const next = this.chatSessions[i] || this.chatSessions[i - 1] || this.chatSessions[0];
@@ -1294,6 +1385,8 @@ function app() {
             if (!this.chatSessions.length) this.newChat();
             this.saveChatSessions();
             this.scrollChatBottom();
+            // 服务端软删除，保留内容以便管理员恢复
+            this.syncChat(gone || { id, title: '会话', collection: '', messages: [] }, { deleted: true });
         },
 
         switchChat(id) {
@@ -1309,6 +1402,128 @@ function app() {
                 const box = this.$refs.chatBox;
                 if (box) box.scrollTop = box.scrollHeight;
             });
+        },
+
+        onChatScroll() {
+            const box = this.$refs.chatBox;
+            if (!box) return;
+            this.stickToBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+        },
+
+        maybeScrollChatBottom() {
+            if (this.stickToBottom) this.scrollChatBottom();
+        },
+
+        async syncChat(s, opts) {
+            opts = opts || {};
+            try {
+                const res = await fetch('/api/chat/sync', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+                    body: JSON.stringify({
+                        session_id: s.id,
+                        title: s.title || '会话',
+                        collection: s.collection || '',
+                        messages: s.messages || [],
+                        deleted: !!opts.deleted,
+                    }),
+                });
+                if (!res.ok && !opts.silent) console.error('chat sync failed', res.status);
+            } catch (e) {
+                if (!opts.silent) console.error('chat sync error', e);
+            }
+        },
+
+        async mergeServerChats() {
+            // 把服务端已保存（未删除）且本地还没有的会话并进列表，用于恢复后拉回。
+            try {
+                const res = await fetch('/api/chat/sessions', { headers: this.authHeaders() });
+                if (!res.ok) return;
+                const data = await res.json();
+                const local = new Set(this.chatSessions.map((s) => s.id));
+                const added = [];
+                for (const it of (data.sessions || [])) {
+                    if (local.has(it.id)) continue;
+                    const s = {
+                        id: it.id,
+                        title: it.title || '会话',
+                        collection: it.collection || '',
+                        messages: it.messages || [],
+                        busy: false,
+                    };
+                    this.chatSessions.push(s);
+                    added.push(s);
+                }
+                if (added.length) {
+                    this.ensureChat();
+                    this.saveChatSessions();
+                }
+            } catch (e) { /* 忽略瞬时错误 */ }
+        },
+
+        async loadChatAdmin() {
+            this.chatAdminLoading = true;
+            this.chatAdminMsg = { ok: true, text: '' };
+            try {
+                const res = await fetch('/api/chat/admin/list', { headers: this.authHeaders() });
+                if (!res.ok) { this.chatAdminMsg = { ok: false, text: '加载失败 ' + res.status }; return; }
+                const data = await res.json();
+                this.chatAdmin = data.sessions || [];
+            } catch (e) {
+                this.chatAdminMsg = { ok: false, text: '加载失败: ' + e.message };
+            } finally {
+                this.chatAdminLoading = false;
+            }
+        },
+
+        chatOwnerLabel(owner) {
+            if (owner === 'admin') return '管理员';
+            return owner;
+        },
+
+        chatMsgCount(s) {
+            return (s.messages || []).length;
+        },
+
+        async chatAdminDelete(row, hard) {
+            const id = row.rowid;
+            const label = row.id;
+            if (hard && !window.confirm('彻底删除会话「' + label + '」？该操作不可恢复。')) return;
+            if (!hard && !window.confirm('删除会话「' + label + '」？内容会保留，可在管理面板恢复。')) return;
+            try {
+                const res = await fetch(hard ? '/api/chat/admin/hard-delete' : '/api/chat/admin/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+                    body: JSON.stringify({ rowid: id }),
+                });
+                if (!res.ok) { this.chatAdminMsg = { ok: false, text: '操作失败 ' + res.status }; return; }
+                await this.loadChatAdmin();
+            } catch (e) {
+                this.chatAdminMsg = { ok: false, text: '操作失败: ' + e.message };
+            }
+        },
+
+        async chatAdminRestore(row) {
+            try {
+                const res = await fetch('/api/chat/admin/restore', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+                    body: JSON.stringify({ rowid: row.rowid }),
+                });
+                if (!res.ok) { this.chatAdminMsg = { ok: false, text: '恢复失败 ' + res.status }; return; }
+                await this.loadChatAdmin();
+                this.chatAdminMsg = { ok: true, text: '已恢复，对应对话页面刷新后会重新出现' };
+            } catch (e) {
+                this.chatAdminMsg = { ok: false, text: '恢复失败: ' + e.message };
+            }
+        },
+
+        chatViewText(s) {
+            const out = [];
+            for (const m of (s.messages || [])) {
+                out.push((m.role === 'user' ? '🙂 ' : '🤖 ') + (m.content || '') + '\n');
+            }
+            return out.join('\n').trim();
         },
 
         async loadCollections() {
@@ -1464,6 +1679,8 @@ function app() {
 
             sess.messages.push({ role: 'assistant', content: '', sources: [], retrieved: [], question: q });
             const idx = sess.messages.length - 1;
+            this.stickToBottom = true;
+            this.maybeScrollChatBottom();
 
             try {
                 const res = await fetch('/api/query', {
@@ -1496,6 +1713,7 @@ function app() {
                             const event = JSON.parse(line.slice(6));
                             if (event.type === 'chunk') {
                                 sess.messages[idx].content += event.text;
+                                this.maybeScrollChatBottom();
                             } else if (event.type === 'done') {
                                 sess.messages[idx].sources = event.sources || [];
                                 sess.messages[idx].retrieved = event.retrieved || [];
@@ -1522,7 +1740,8 @@ function app() {
             this.stopClicked = false;
             this._activeReader = null;
             this.saveChatSessions();
-            this.scrollChatBottom();
+            this.maybeScrollChatBottom();
+            this.syncChat(sess, { silent: true });
         },
 
         async stopQuery() {
@@ -1731,15 +1950,49 @@ function app() {
             return Object.keys(this.selected).length;
         },
 
+        get deletableSelected() {
+            const sampleByRel = {};
+            for (const it of this.fsItems) sampleByRel[it.rel] = !!it.sample;
+            return Object.keys(this.selected).filter((rel) => !sampleByRel[rel]);
+        },
+
         async loadFiles() {
             try {
                 const res = await fetch('/api/files', { headers: this.authHeaders() });
                 const data = await res.json();
                 this.fsItems = data.items || [];
+                this.fsDirs = data.dirs || [];
                 this.missingFiles = (data.missing || []).map(m => m.filename);
                 this.fsSummary = data.summary || { total: 0, imported: 0, unimported: 0 };
                 this.rebuildTree();
             } catch {}
+        },
+
+        async deleteSelected() {
+            const rels = this.deletableSelected;
+            if (!rels.length) return;
+            const sampleCount = Object.keys(this.selected).length - rels.length;
+            let msg = '确定删除所选 ' + rels.length + ' 个文件？将同时从知识库索引移除，不可恢复。';
+            if (sampleCount) msg += '\n（另有 ' + sampleCount + ' 个样例文件将被跳过）';
+            if (!window.confirm(msg)) return;
+            try {
+                const res = await fetch('/api/files/delete', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+                    body: JSON.stringify({ rels }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+                (data.deleted || []).forEach((rel) => { delete this.selected[rel]; });
+                await Promise.all([this.loadFiles(), this.loadStatus(), this.loadImports()]);
+                const skipped = data.skipped || [];
+                if (skipped.length) {
+                    alert('已删除 ' + (data.deleted || []).length + ' 个；跳过 ' + skipped.length + ' 个：\n'
+                        + skipped.map(s => '· ' + s.rel + '（' + s.reason + '）').join('\n'));
+                }
+            } catch (e) {
+                alert(e.message);
+            }
         },
 
         async uploadFiles(ev) {
@@ -1767,6 +2020,20 @@ function app() {
 
         rebuildTree() {
             const root = { dir: true, children: new Map(), total: 0, imported: 0, chunks: 0 };
+            const ensureDir = (rel) => {
+                const parts = rel.split('/');
+                let node = root;
+                for (const part of parts) {
+                    if (!part) continue;
+                    let next = node.children.get(part);
+                    if (!next) {
+                        next = { name: part, dir: true, children: new Map(), total: 0, imported: 0, chunks: 0 };
+                        node.children.set(part, next);
+                    }
+                    node = next;
+                }
+            };
+            for (const d of this.fsDirs) ensureDir(d);
             for (const it of this.fsItems) {
                 const parts = it.rel.split('/');
                 let node = root;
@@ -1831,6 +2098,7 @@ function app() {
                     name: node.name, rel, depth, isDir: node.dir,
                     expanded: !q ? !!this.fsExpanded[rel] : true,
                     imported: node.imported, total: node.total, file: node.file,
+                    hasChildren: node.dir && node.children.size > 0,
                 });
                 if (node.dir && (q || this.fsExpanded[rel])) {
                     for (const [kname, kchild] of node.children) {
@@ -1910,6 +2178,13 @@ function app() {
             } catch {}
         },
 
+        async loadVersion() {
+            try {
+                const res = await fetch('/api/version', { cache: 'no-store' });
+                if (res.ok) this.versionInfo = await res.json();
+            } catch {}
+        },
+
         async loadModels() {
             try {
                 const res = await fetch('/api/models');
@@ -1978,12 +2253,19 @@ function app() {
         },
 
         get visibleTabs() {
-            return this.tabs;
+            return this.tabs.filter((t) => t !== 'manage' || this.isAdmin);
         },
 
         get visibleThemeOptions() {
             const allowed = this.uiConfig.themes || [];
             return allowed.map((id) => this.themeOptions.find((t) => t.id === id)).filter(Boolean);
+        },
+
+        get themeRows() {
+            const all = this.themeOptions.map((t) => t.id);
+            const configured = (this.uiConfig.themes || []).filter((id) => all.includes(id));
+            const rest = all.filter((id) => !configured.includes(id));
+            return configured.concat(rest);
         },
 
         nameFor(id) {
@@ -2005,12 +2287,14 @@ function app() {
                     const en = {};
                     (data.themes || []).forEach((t) => { en[t] = true; });
                     this.themeEnabled = en;
-                    if (!this.uiConfig.themes.includes(this.theme)) {
-                        this.theme = this.uiConfig.default_theme || this.uiConfig.themes[0] || 'default';
-                        this.applyTheme();
-                    }
+                    const stored = (() => { try { return localStorage.getItem('ragTheme'); } catch (e) { return null; } })();
+                    this.theme = (stored && this.uiConfig.themes.includes(stored))
+                        ? stored
+                        : (this.uiConfig.default_theme || this.uiConfig.themes[0] || 'default');
+                    this.applyTheme(false);
                 }
             } catch (e) {}
+            document.documentElement.classList.add('theme-ready');
         },
 
         toggleTheme(id, on) {
@@ -2018,11 +2302,11 @@ function app() {
         },
 
         moveTheme(i, delta) {
-            const arr = this.uiConfig.themes.slice();
+            const arr = this.themeRows.slice();
             const j = i + delta;
             if (j < 0 || j >= arr.length) return;
             [arr[i], arr[j]] = [arr[j], arr[i]];
-            this.uiConfig = { ...this.uiConfig, themes: arr };
+            this.uiConfig = { ...this.uiConfig, themes: arr.filter((id) => this.themeEnabled[id]) };
         },
 
         setDefaultTheme(id) {
@@ -2031,7 +2315,7 @@ function app() {
 
         async saveUiConfig() {
             this.uiMsg = '';
-            const themes = this.uiConfig.themes.filter((t) => this.themeEnabled[t]);
+            const themes = this.themeRows.filter((t) => this.themeEnabled[t]);
             if (!themes.length) { this.uiOk = false; this.uiMsg = '至少勾选一个主题'; return; }
             const defaultTheme = themes.includes(this.uiConfig.default_theme) ? this.uiConfig.default_theme : themes[0];
             this.uiBusy = true;
@@ -2049,7 +2333,7 @@ function app() {
                 this.themeEnabled = en;
                 if (!this.uiConfig.themes.includes(this.theme)) {
                     this.theme = this.uiConfig.default_theme || 'default';
-                    this.applyTheme();
+                    this.applyTheme(false);
                 }
                 this.uiOk = true; this.uiMsg = '已保存';
             } catch (e) {
@@ -2304,7 +2588,7 @@ function app() {
             try { localStorage.setItem('ragAdminToken', ''); } catch (e) {}
             this.isAdmin = false;
             this.adminMsg = '';
-            if (this.activeTab === 'models') this.activeTab = 'chat';
+            if (this.activeTab === 'models' || this.activeTab === 'manage') this.activeTab = 'chat';
             this.modelMsg = { ok: true, text: '已退出管理员视角' };
             this.reloadData();
         },
@@ -2325,8 +2609,9 @@ function app() {
             } catch {}
         },
 
-        applyTheme() {
+        applyTheme(persist = true) {
             document.documentElement.dataset.theme = this.theme;
+            if (!persist) return;
             try { localStorage.setItem('ragTheme', this.theme); } catch (e) {}
         },
 

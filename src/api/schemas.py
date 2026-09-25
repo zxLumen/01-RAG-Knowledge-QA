@@ -187,6 +187,10 @@ class CollectionSwitchRequest(BaseModel):
     name: str
 
 
+class FileDeleteRequest(BaseModel):
+    rels: list[str]
+
+
 class CollectionRenameRequest(BaseModel):
     name: str
     new_name: str
@@ -210,3 +214,36 @@ class UIConfigResponse(BaseModel):
 class CollectionsResponse(BaseModel):
     current: str
     collections: list[str]
+
+
+class ChatSyncRequest(BaseModel):
+    session_id: str = Field(min_length=1)
+    title: str = ""
+    collection: str = ""
+    messages: list[dict] = Field(default_factory=list)
+    deleted: bool = False
+
+
+class ChatSessionItem(BaseModel):
+    rowid: int
+    id: str
+    owner: str = ""
+    title: str = ""
+    collection: str = ""
+    messages: list[dict] = Field(default_factory=list)
+    created_at: str = ""
+    updated_at: str = ""
+    deleted: bool = False
+
+
+class ChatListResponse(BaseModel):
+    sessions: list[ChatSessionItem]
+
+
+class ChatAdminListResponse(BaseModel):
+    count: int
+    sessions: list[ChatSessionItem]
+
+
+class ChatRowRequest(BaseModel):
+    rowid: int

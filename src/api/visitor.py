@@ -144,6 +144,11 @@ def remove_visitor(visitor_id: str) -> None:
         state = _load_state()
         state["visitors"].pop(vid, None)
         _save_state()
+    try:
+        from src.chats import store as chat_store
+        chat_store.purge_owner(collection_name(vid))
+    except Exception:
+        pass
     _delete_collection(vid)
 
 

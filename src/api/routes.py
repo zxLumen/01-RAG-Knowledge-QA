@@ -13,10 +13,16 @@ from fastapi.responses import StreamingResponse
 
 from src.api import admin_auth, ui_config, visitor
 from src.api.schemas import (
+    ChatAdminListResponse,
+    ChatListResponse,
+    ChatRowRequest,
+    ChatSessionItem,
+    ChatSyncRequest,
     CollectionRenameRequest,
     CollectionsResponse,
     CollectionSwitchRequest,
     ConfigResponse,
+    FileDeleteRequest,
     ImportFile,
     ImportListResponse,
     ImportSession,
@@ -40,12 +46,14 @@ from src.api.schemas import (
     UIConfigRequest,
     UIConfigResponse,
 )
+from src.chats import store as chat_store
 from src.config import settings
 from src.imports.store import (
     collection_session_stats,
     delete_collection_sessions,
     get_session,
     list_sessions,
+    record_deletion,
     session_snapshot,
 )
 from src.imports.store import list_files as list_session_files
@@ -64,6 +72,7 @@ from src.vectorstore.naming import (
 )
 from src.vectorstore.store import (
     collection_info,
+    delete_by_source,
     delete_collection,
     get_client,
     list_collections,
@@ -223,6 +232,78 @@ async def cancel_query(req: QueryCancelRequest):
     return {"cancelled": cancelled}
 
 
+def _chat_owner(request: Request, response: Response) -> str:
+    """Owner key for server-side chat history: admin vs this visitor."""
+    scope = visitor_collection(request, response)
+    return chat_store.ADMIN_OWNER if scope is None else scope
+
+
+@router.post("/chat/sync", response_model=ChatSessionItem)
+async def chat_sync(req: ChatSyncRequest, request: Request, response: Response):
+    if len(req.messages) > chat_store.MAX_MESSAGES:
+        req.messages = req.messages[-chat_store.MAX_MESSAGES:]
+    payload = json.dumps(req.messages, ensure_ascii=False)
+    if len(payload) > chat_store.MAX_MESSAGE_BYTES:
+        raise HTTPException(status_code=413, detail="会话内容过大，无法保存")
+    owner = _chat_owner(request, response)
+    row = await run_in_threadpool(
+        chat_store.upsert,
+        owner,
+        req.session_id,
+        title=req.title,
+        collection=req.collection,
+        messages=req.messages,
+        deleted=req.deleted,
+    )
+    return ChatSessionItem(**row)
+
+
+@router.get("/chat/sessions", response_model=ChatListResponse)
+async def chat_list(request: Request, response: Response):
+    owner = _chat_owner(request, response)
+    rows = await run_in_threadpool(chat_store.list_for_owner, owner)
+    return ChatListResponse(sessions=[ChatSessionItem(**r) for r in rows])
+
+
+@router.get("/chat/admin/list", response_model=ChatAdminListResponse)
+async def chat_admin_list(_admin: None = Depends(require_admin)):
+    rows = await run_in_threadpool(chat_store.admin_list)
+    items = [ChatSessionItem(**r) for r in rows]
+    return ChatAdminListResponse(count=len(items), sessions=items)
+
+
+@router.post("/chat/admin/delete", response_model=ChatSessionItem)
+async def chat_admin_delete(
+    req: ChatRowRequest, _admin: None = Depends(require_admin)
+):
+    row = await run_in_threadpool(chat_store.set_deleted, req.rowid, True)
+    if not row:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    item = await run_in_threadpool(chat_store.get_by_rowid, req.rowid)
+    return ChatSessionItem(**item)
+
+
+@router.post("/chat/admin/hard-delete")
+async def chat_admin_hard_delete(
+    req: ChatRowRequest, _admin: None = Depends(require_admin)
+):
+    removed = await run_in_threadpool(chat_store.hard_delete, req.rowid)
+    if not removed:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    return {"ok": True}
+
+
+@router.post("/chat/admin/restore", response_model=ChatSessionItem)
+async def chat_admin_restore(
+    req: ChatRowRequest, _admin: None = Depends(require_admin)
+):
+    row = await run_in_threadpool(chat_store.set_deleted, req.rowid, False)
+    if not row:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    item = await run_in_threadpool(chat_store.get_by_rowid, req.rowid)
+    return ChatSessionItem(**item)
+
+
 @router.post("/ingest", response_model=IngestResponse)
 async def ingest(req: IngestRequest, request: Request, response: Response):
     if ingest_progress.snapshot()["running"]:
@@ -343,7 +424,8 @@ async def status(request: Request, response: Response):
 
 
 @router.get("/ui/config", response_model=UIConfigResponse)
-async def ui_config_get():
+async def ui_config_get(response: Response):
+    response.headers["Cache-Control"] = "no-store"
     return UIConfigResponse(**ui_config.load())
 
 
@@ -535,21 +617,27 @@ async def select_model(req: ModelSelectRequest):
 async def list_files(request: Request, response: Response):
     cwd = Path.cwd().resolve()
     collection = visitor_collection(request, response)
+    sample_root = (cwd / visitor.SAMPLES_DIR).resolve()
     if settings.demo_mode and not _is_admin(request):
         roots = _visitor_roots(
             request.cookies.get(visitor.VISITOR_COOKIE, "")
         )
-        sample_root = (cwd / visitor.SAMPLES_DIR).resolve()
     else:
         roots = [(cwd / "data").resolve()]
-        sample_root = None
 
     disk: dict[str, dict] = {}
+    dirs: set[str] = set()
     for root in roots:
         if not root.is_dir():
             continue
+        dirs.add(str(root.relative_to(cwd)))
         for f in sorted(root.rglob("*")):
-            if not f.is_file() or f.name.startswith("."):
+            if f.name.startswith("."):
+                continue
+            if f.is_dir():
+                dirs.add(str(f.resolve().relative_to(cwd)))
+                continue
+            if not f.is_file():
                 continue
             resolved = f.resolve()
             disk[str(resolved)] = {
@@ -589,6 +677,7 @@ async def list_files(request: Request, response: Response):
     return {
         "root": "data",
         "items": items,
+        "dirs": sorted(dirs),
         "missing": missing,
         "summary": {
             "total": len(items),
@@ -617,6 +706,66 @@ async def file_content(rel: str, request: Request, response: Response):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"cannot read file: {e}")
     return {"rel": rel, "name": target.name, "content": content}
+
+
+@router.post("/files/delete")
+async def delete_files(req: FileDeleteRequest, request: Request, response: Response):
+    """Delete user-owned files from disk and their vectors from the index.
+
+    Visitors may only delete files under their own upload directory; admins may
+    delete any file under ``data/``. Directories and shared samples are refused
+    and reported per item in ``skipped``.
+    """
+    rels = [r for r in dict.fromkeys(req.rels) if r]
+    if not rels:
+        raise HTTPException(status_code=400, detail="未选择要删除的文件")
+
+    cwd = Path.cwd().resolve()
+    if settings.demo_mode and not _is_admin(request):
+        vid = request.cookies.get(visitor.VISITOR_COOKIE, "")
+        if not visitor.is_valid_id(vid):
+            raise HTTPException(status_code=400, detail="无效的访客身份")
+        roots = [visitor.visitor_dir(vid).resolve()]
+    else:
+        roots = [(cwd / "data").resolve()]
+    sample_root = (cwd / visitor.SAMPLES_DIR).resolve()
+
+    collection = visitor_collection(request, response) or settings.qdrant_collection
+    deleted: list[str] = []
+    skipped: list[dict] = []
+    for raw in rels:
+        target = (cwd / raw).resolve()
+        if not any(_within(target, root) for root in roots):
+            skipped.append({"rel": raw, "reason": "只能删除自己上传的文件"})
+            continue
+        if _within(target, sample_root):
+            skipped.append({"rel": raw, "reason": "样例文件不可删除"})
+            continue
+        if target.is_dir():
+            skipped.append({"rel": raw, "reason": "不能删除目录"})
+            continue
+        if not target.is_file():
+            skipped.append({"rel": raw, "reason": "文件不存在"})
+            continue
+
+        rel = str(target.relative_to(cwd))
+        try:
+            target.unlink()
+        except OSError as e:
+            skipped.append({"rel": rel, "reason": f"删除失败: {e}"})
+            continue
+        try:
+            delete_by_source(get_client(), rel, collection=collection)
+        except Exception:
+            logger.exception("failed to delete vectors for %s", rel)
+        deleted.append(rel)
+
+    if deleted:
+        try:
+            record_deletion(collection, deleted)
+        except Exception:
+            logger.exception("failed to record deletions: %s", deleted)
+    return {"status": "ok", "deleted": deleted, "skipped": skipped}
 
 
 ALLOWED_UPLOAD_EXT = {".md", ".txt", ".pdf"}
@@ -684,7 +833,11 @@ async def collections(request: Request, response: Response):
 
 
 @router.post("/collections/switch", response_model=CollectionsResponse)
-async def switch_collection(req: CollectionSwitchRequest, request: Request):
+async def switch_collection(
+    req: CollectionSwitchRequest,
+    request: Request,
+    _admin: None = Depends(require_admin),
+):
     if settings.demo_mode and not _is_admin(request):
         raise HTTPException(status_code=403, detail="访客无权切换集合")
     try:
@@ -698,7 +851,11 @@ async def switch_collection(req: CollectionSwitchRequest, request: Request):
 
 
 @router.post("/collections/rename", response_model=CollectionsResponse)
-async def rename_collection(req: CollectionRenameRequest, request: Request):
+async def rename_collection(
+    req: CollectionRenameRequest,
+    request: Request,
+    _admin: None = Depends(require_admin),
+):
     if settings.demo_mode and not _is_admin(request):
         raise HTTPException(status_code=403, detail="访客无权重命名集合")
     try:
@@ -712,7 +869,11 @@ async def rename_collection(req: CollectionRenameRequest, request: Request):
 
 
 @router.post("/collections/delete", response_model=CollectionsResponse)
-async def remove_collection(req: CollectionSwitchRequest, request: Request):
+async def remove_collection(
+    req: CollectionSwitchRequest,
+    request: Request,
+    _admin: None = Depends(require_admin),
+):
     if settings.demo_mode and not _is_admin(request):
         raise HTTPException(status_code=403, detail="访客无权删除集合")
     client = get_client()

@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "knowledge_base"
     import_db_path: str = "./qdrant_data/imports.db"
+    chat_db_path: str = "./qdrant_data/chats.db"
 
     dense_embedding_model: str = "BAAI/bge-m3"
     embedding_dim: int = 1024
