@@ -157,6 +157,61 @@ def test_collection_isolation_and_switch(tmp_path, monkeypatch):
     assert _count_points() == 1
 
 
+def _point_texts():
+    from src.config import settings
+    from src.vectorstore.store import get_client
+
+    points, _ = get_client().scroll(
+        collection_name=settings.qdrant_collection, limit=100, with_payload=True
+    )
+    return sorted(p.payload["text"] for p in points)
+
+
+def test_failed_import_leaves_collection_unchanged(tmp_path, monkeypatch):
+    _setup_paths(tmp_path, monkeypatch)
+    dense, sparse = _fake_embeddings()
+    monkeypatch.setattr("src.ingest.pipeline.get_dense_embeddings", dense)
+    monkeypatch.setattr("src.ingest.pipeline.get_sparse_embeddings", sparse)
+
+    from src.ingest.pipeline import ingest_paths
+    from src.vectorstore.store import get_client, list_collections
+
+    data_dir = tmp_path / "kb"
+    data_dir.mkdir()
+    (data_dir / "a.md").write_text("alpha content. " * 20, encoding="utf-8")
+    (data_dir / "b.md").write_text("beta content. " * 20, encoding="utf-8")
+
+    ingest_paths([str(data_dir)], recreate=True)
+    before = _point_texts()
+    assert len(before) == 2
+
+    # second import fails after the first embed window
+    import src.ingest.pipeline as pipeline
+
+    monkeypatch.setattr(pipeline, "INGEST_BATCH_SIZE", 1)
+
+    class FailingDense:
+        calls = 0
+        dim = 1024
+
+        def embed_documents(self, texts):
+            FailingDense.calls += 1
+            if FailingDense.calls >= 2:
+                raise RuntimeError("boom")
+            return [[0.0] * self.dim for _ in texts]
+
+    monkeypatch.setattr(pipeline, "get_dense_embeddings", lambda: FailingDense())
+
+    (data_dir / "a.md").write_text("alpha CHANGED. " * 20, encoding="utf-8")
+    (data_dir / "b.md").write_text("beta CHANGED. " * 20, encoding="utf-8")
+    r = ingest_paths([str(data_dir)], recreate=False, delete_missing=True)
+    assert r.get("error") == "error"
+
+    # collection unchanged and no staging leftovers
+    assert _point_texts() == before
+    assert not any("__stg_" in name for name in list_collections(get_client()))
+
+
 def test_recreate_prunes_stale_ledger_for_other_roots(tmp_path, monkeypatch):
     _setup_paths(tmp_path, monkeypatch)
     dense, sparse = _fake_embeddings()

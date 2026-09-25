@@ -17,10 +17,18 @@ from src.vectorstore.context import current_collection, reset_collection, set_co
 from src.vectorstore.embedder import get_dense_embeddings, get_sparse_embeddings
 from src.vectorstore.store import (
     add_documents,
+    copy_source_points,
+    create_collection,
     delete_by_source,
-    ensure_collection,
     get_client,
+    promote_collection,
+    source_stats,
+    staging_name,
 )
+
+# Chunks per embed+upsert flush. Large imports are streamed through this window
+# so peak memory does not scale with the collection size.
+INGEST_BATCH_SIZE = 128
 
 
 def _record_session(
@@ -140,6 +148,17 @@ def ingest_paths(
             reset_collection(token)
 
 
+def _deleted_row(src: str) -> dict:
+    return {
+        "filename": pathlib.Path(src).name,
+        "rel_path": src,
+        "status": "deleted",
+        "chunk_count": 0,
+        "file_size": 0,
+        "file_md5": None,
+    }
+
+
 def _ingest_paths(
     paths: list[str],
     recreate: bool = False,
@@ -148,19 +167,13 @@ def _ingest_paths(
 ) -> dict:
     started = time.monotonic()
     client = get_client()
+    logical = current_collection()
 
     if progress:
         progress("read", 0, 0)
 
-    existing = (
-        {}
-        if recreate
-        else latest_md5_by_rel_path(current_collection())
-    )
+    existing = {} if recreate else latest_md5_by_rel_path(logical)
     existing_md5 = {k: v.get("file_md5") for k, v in existing.items()}
-
-    if recreate:
-        ensure_collection(client, recreate=True)
 
     entries = _collect_docs(paths)
     current_sources = {e["source"] for e in entries}
@@ -173,21 +186,14 @@ def _ingest_paths(
         deleted = _deleted_sources(existing, current_sources, paths)
 
     if not entries:
+        # No supported documents under the given paths: never touch the
+        # collection, only record tombstones for sources that disappeared.
         if progress:
             progress("done", 0, 0)
         files = []
         for src in deleted:
-            delete_by_source(client, src)
-            files.append(
-                {
-                    "filename": pathlib.Path(src).name,
-                    "rel_path": src,
-                    "status": "deleted",
-                    "chunk_count": 0,
-                    "file_size": 0,
-                    "file_md5": None,
-                }
-            )
+            delete_by_source(client, src, collection=logical)
+            files.append(_deleted_row(src))
         if files:
             session_id = add_session(
                 ", ".join(paths),
@@ -199,7 +205,7 @@ def _ingest_paths(
                 embedding_model=get_embedding().get('model') or settings.dense_embedding_model,
                 chunk_size=settings.chunk_size,
                 chunk_overlap=settings.chunk_overlap,
-                collection=current_collection(),
+                collection=logical,
             )
             add_files(session_id, files)
             return {
@@ -224,64 +230,86 @@ def _ingest_paths(
         return {"error": "No supported documents found", "documents": 0, "chunks": 0}
 
     to_process = [e for e in entries if recreate or existing_md5.get(e["source"]) != e["md5"]]
+    changed_sources = {e["source"] for e in to_process}
+    deleted_set = set(deleted)
 
-    process_docs = [d for e in to_process for d in e["docs"]]
-    chunks = split_documents(process_docs) if process_docs else []
+    if not recreate and not to_process and not deleted:
+        # Nothing changed: record an unchanged session without rebuilding/rewriting.
+        files = [
+            {
+                "filename": e["filename"],
+                "rel_path": e["source"],
+                "status": "unchanged",
+                "chunk_count": existing.get(e["source"], {}).get("chunk_count", 0),
+                "file_size": len(
+                    "".join(d.content for d in e["docs"]).encode("utf-8")
+                ),
+                "file_md5": e["md5"],
+            }
+            for e in entries
+        ]
+        session_id = add_session(
+            ", ".join(paths),
+            recreate=False,
+            documents=len(entries),
+            chunks=0,
+            status="ok",
+            duration_ms=int((time.monotonic() - started) * 1000),
+            embedding_model=get_embedding().get('model') or settings.dense_embedding_model,
+            chunk_size=settings.chunk_size,
+            chunk_overlap=settings.chunk_overlap,
+            collection=logical,
+        )
+        add_files(session_id, files)
+        if progress:
+            progress("done", 1, 1)
+        return {
+            "documents": len(entries),
+            "chunks": 0,
+            "added": 0,
+            "updated": 0,
+            "unchanged": len(entries),
+            "deleted": 0,
+        }
 
-    texts = [c["text"] for c in chunks]
-    metadatas = [c["metadata"] for c in chunks]
-    ids = [str(uuid.uuid4()) for _ in chunks]
+    # Sources already indexed that this run neither re-embeds nor deletes must
+    # be carried into the fresh build untouched.
+    carry_sources: list[str] = []
+    if not recreate:
+        indexed = {s["source"] for s in source_stats(client, collection=logical)}
+        carry_sources = [
+            s for s in indexed if s not in changed_sources and s not in deleted_set
+        ]
 
+    chunks = _chunks_for(to_process)
+    chunk_counts: dict[str, int] = {}
+    for c in chunks:
+        src = c["metadata"]["source"]
+        chunk_counts[src] = chunk_counts.get(src, 0) + 1
+
+    staging = staging_name(logical)
+    create_collection(client, staging)
+    promoted = False
     try:
-        if recreate or chunks:
-            for e in to_process:
-                delete_by_source(client, e["source"])
-            dense_cb = None
-            sparse_cb = None
-            if progress:
-                embed_total = len(texts) * 2
-                progress("embed", 0, embed_total)
+        for src in carry_sources:
+            copy_source_points(client, logical, staging, src)
 
-                def dense_cb(n: int) -> None:
-                    progress("embed", n, embed_total)
+        embed_total = len(chunks) * 2
+        if progress:
+            progress("embed", 0, embed_total)
+        _embed_into(client, staging, chunks, progress, embed_total=embed_total)
 
-                def sparse_cb(n: int) -> None:
-                    progress("embed", len(texts) + n, embed_total)
-
-            dense_embeddings = get_dense_embeddings()
-            dense_vecs = []
-            if texts:
-                if dense_cb:
-                    dense_vecs = dense_embeddings.embed_documents(texts, progress=dense_cb)
-                else:
-                    dense_vecs = dense_embeddings.embed_documents(texts)
-            sparse_vecs = []
-            if texts:
-                try:
-                    sparse_embeddings = get_sparse_embeddings()
-                    if sparse_cb:
-                        sparse_results = sparse_embeddings.embed_documents(
-                            texts, progress=sparse_cb
-                        )
-                    else:
-                        sparse_results = sparse_embeddings.embed_documents(texts)
-                    sparse_vecs = [
-                        {"indices": s.indices, "values": s.values} for s in sparse_results
-                    ]
-                except Exception:
-                    if ingest_progress.is_cancelled():
-                        raise
-                    pass
-            ensure_collection(client, recreate=False)
-            for meta in metadatas:
-                meta["rel_path"] = meta.get("source")
-            if progress:
-                progress("upsert", 0, 0)
-            add_documents(client, texts, metadatas, ids, dense_vecs, sparse_vecs)
+        promote_collection(client, logical, staging)
+        promoted = True
     except Exception as e:
         traceback.print_exc()
         cancelled = ingest_progress.is_cancelled() or "cancelled" in str(e)
         phase = "cancelled" if cancelled else "error"
+        if not promoted:
+            try:
+                client.delete_collection(staging)
+            except Exception:
+                pass
         _record_session(
             ", ".join(paths),
             recreate,
@@ -299,7 +327,7 @@ def _ingest_paths(
     added = updated = unchanged_count = 0
     for e in entries:
         src = e["source"]
-        chunk_count = sum(1 for c in chunks if c["metadata"]["source"] == src)
+        chunk_count = chunk_counts.get(src, 0)
         if recreate or existing_md5.get(src) != e["md5"]:
             if existing_md5.get(src) is None:
                 status = "added"
@@ -325,20 +353,10 @@ def _ingest_paths(
         )
 
     for src in deleted:
-        delete_by_source(client, src)
-        files.append(
-            {
-                "filename": pathlib.Path(src).name,
-                "rel_path": src,
-                "status": "deleted",
-                "chunk_count": 0,
-                "file_size": 0,
-                "file_md5": None,
-            }
-        )
+        files.append(_deleted_row(src))
 
     if recreate:
-        prune_files(current_collection(), {e["source"] for e in entries})
+        prune_files(logical, {e["source"] for e in entries})
 
     session_id = add_session(
         ", ".join(paths),
@@ -350,7 +368,7 @@ def _ingest_paths(
         embedding_model=get_embedding().get('model') or settings.dense_embedding_model,
         chunk_size=settings.chunk_size,
         chunk_overlap=settings.chunk_overlap,
-        collection=current_collection(),
+        collection=logical,
     )
     add_files(session_id, files)
 
@@ -365,6 +383,73 @@ def _ingest_paths(
         "unchanged": unchanged_count,
         "deleted": len(deleted),
     }
+
+
+def _chunks_for(to_process: list[dict]) -> list[dict]:
+    process_docs = [d for e in to_process for d in e["docs"]]
+    chunks = split_documents(process_docs) if process_docs else []
+    for c in chunks:
+        c["metadata"]["rel_path"] = c["metadata"].get("source")
+    return chunks
+
+
+def _embed_into(
+    client,
+    collection: str,
+    chunks: list[dict],
+    progress: Callable[[str, int, int], None] | None,
+    *,
+    embed_total: int,
+) -> None:
+    """Embed chunks in windows and upsert each window into ``collection``.
+
+    Only one window of vectors is alive at a time, so peak memory stays flat
+    regardless of how many chunks an import produces.
+    """
+    if not chunks:
+        return
+    dense_embeddings = get_dense_embeddings()
+    try:
+        sparse_embeddings = get_sparse_embeddings()
+    except Exception:
+        sparse_embeddings = None
+
+    for start in range(0, len(chunks), INGEST_BATCH_SIZE):
+        if ingest_progress.is_cancelled():
+            raise RuntimeError("cancelled")
+        window = chunks[start : start + INGEST_BATCH_SIZE]
+        texts = [c["text"] for c in window]
+        metadatas = [c["metadata"] for c in window]
+        ids = [str(uuid.uuid4()) for _ in window]
+
+        dense_vecs = dense_embeddings.embed_documents(texts)
+        if progress:
+            progress("embed", min(embed_total, (start + len(texts)) * 2), embed_total)
+
+        sparse_vecs: list[dict] = []
+        if sparse_embeddings is not None:
+            try:
+                sparse_results = sparse_embeddings.embed_documents(texts)
+                sparse_vecs = [
+                    {"indices": s.indices, "values": s.values} for s in sparse_results
+                ]
+            except Exception:
+                if ingest_progress.is_cancelled():
+                    raise
+        if progress:
+            progress("embed", min(embed_total, (start + len(texts)) * 2), embed_total)
+
+        if progress:
+            progress("upsert", 0, 0)
+        add_documents(
+            client,
+            texts,
+            metadatas,
+            ids,
+            dense_vecs,
+            sparse_vecs,
+            collection=collection,
+        )
 
 
 def ingest_path(path: str, recreate: bool = False, delete_missing: bool = True) -> dict:

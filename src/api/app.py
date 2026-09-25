@@ -24,11 +24,13 @@ _index_path = static_dir / "index.html"
 def _ensure_active_collection() -> None:
     """Adopt the persisted active collection and make sure it exists."""
     from src.vectorstore import active
-    from src.vectorstore.store import ensure_collection, get_client
+    from src.vectorstore.store import cleanup_staging, ensure_collection, get_client
 
     active.apply()
     try:
-        ensure_collection(get_client(), recreate=False)
+        client = get_client()
+        ensure_collection(client, recreate=False)
+        cleanup_staging(client)
     except Exception:  # noqa: BLE001 - a failure here must not block startup
         logger.exception("failed to ensure the active collection exists")
 

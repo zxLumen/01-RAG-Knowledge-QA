@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import threading
+import uuid
 from pathlib import Path
 
 from qdrant_client import QdrantClient
@@ -20,6 +22,37 @@ from src.vectorstore.naming import (
 
 _client: QdrantClient | None = None
 _write_lock = threading.RLock()
+
+# A batched import is built into a throwaway collection first and then promoted
+# to the logical name via a Qdrant alias. The physical name carries this marker
+# so orphaned staging collections can be reclaimed.
+_STAGING_RE = re.compile(r"__stg_[0-9a-f]{8}$")
+
+
+def staging_name(logical: str) -> str:
+    """A unique, Qdrant-legal physical name for a staging build of ``logical``."""
+    suffix = uuid.uuid4().hex[:8]
+    base = f"{logical}__stg_{suffix}"
+    return base[:63]
+
+
+def _is_staging(name: str) -> bool:
+    return bool(_STAGING_RE.search(name))
+
+
+def _alias_map(client: QdrantClient) -> dict[str, str]:
+    """{alias_name: physical_collection_name}."""
+    try:
+        return {a.alias_name: a.collection_name for a in client.get_aliases().aliases}
+    except Exception:
+        return {}
+
+
+def _real_collections(client: QdrantClient) -> set[str]:
+    try:
+        return {c.name for c in client.get_collections().collections}
+    except Exception:
+        return set()
 
 
 def get_client() -> QdrantClient:
@@ -41,10 +74,14 @@ def list_collections(client: QdrantClient) -> list[str]:
     Qdrant does not expose creation timestamps, so we keep a creation-order
     registry in ``data/collection_order.json``.
     """
-    try:
-        names = [c.name for c in client.get_collections().collections]
-    except Exception:
-        return []
+    physical = _real_collections(client)
+    aliases = _alias_map(client)
+    targeted = set(aliases.values())
+    names: set[str] = set(aliases.keys())
+    for p in physical:
+        if p in targeted or _is_staging(p):
+            continue
+        names.add(p)
     idx = order_index()
     known = [n for n in names if n in idx]
     unknown = sorted(n for n in names if n not in idx)
@@ -53,8 +90,20 @@ def list_collections(client: QdrantClient) -> list[str]:
 
 
 def delete_collection(client: QdrantClient, name: str) -> None:
+    """Delete a logical collection, following an alias when one is in place."""
+    from qdrant_client.models import DeleteAlias, DeleteAliasOperation
+
     with _write_lock:
-        client.delete_collection(name)
+        aliases = _alias_map(client)
+        if name in aliases:
+            target = aliases[name]
+            client.update_collection_aliases(
+                [DeleteAliasOperation(delete_alias=DeleteAlias(alias_name=name))]
+            )
+            if target in _real_collections(client):
+                client.delete_collection(target)
+        elif name in _real_collections(client):
+            client.delete_collection(name)
         drop_creation(name)
 
 
@@ -90,6 +139,11 @@ def ensure_collection_unlocked(client: QdrantClient, recreate: bool = False) -> 
             return
 
     record_creation(name)
+    create_collection(client, name)
+
+
+def create_collection(client: QdrantClient, name: str) -> None:
+    """Create an empty collection under an explicit physical name."""
     client.create_collection(
         collection_name=name,
         vectors_config={
@@ -108,6 +162,7 @@ def add_documents(
     ids: list[str],
     dense_vectors: list[list[float]],
     sparse_vectors: list[dict] | None = None,
+    collection: str | None = None,
 ) -> None:
     from qdrant_client.models import PointStruct, SparseVector
 
@@ -134,9 +189,109 @@ def add_documents(
 
     with _write_lock:
         client.upsert(
-            collection_name=current_collection(),
+            collection_name=collection or current_collection(),
             points=points,
         )
+
+
+def copy_source_points(
+    client: QdrantClient, src: str, dst: str, source: str
+) -> int:
+    """Copy every point of ``source`` from collection ``src`` to ``dst``.
+
+    Used to preserve unchanged files when an import rebuilds the whole
+    collection in a staging collection. Batched so memory stays bounded.
+    """
+    from qdrant_client.models import PointStruct
+
+    if not client.collection_exists(src):
+        return 0
+    copied = 0
+    offset = None
+    while True:
+        points, offset = client.scroll(
+            collection_name=src,
+            scroll_filter=_source_filter(source),
+            limit=1000,
+            offset=offset,
+            with_vectors=True,
+            with_payload=True,
+        )
+        if points:
+            with _write_lock:
+                client.upsert(
+                    collection_name=dst,
+                    points=[
+                        PointStruct(id=p.id, vector=p.vector, payload=p.payload)
+                        for p in points
+                    ],
+                )
+            copied += len(points)
+        if offset is None:
+            break
+    return copied
+
+
+def promote_collection(client: QdrantClient, logical: str, staging: str) -> None:
+    """Atomically make ``logical`` resolve to the freshly built ``staging``.
+
+    When ``logical`` is already an alias, the alias is repointed in a single
+    atomic ``update_collection_aliases`` call, then the previous physical
+    collection is dropped. On first promotion of a real collection the alias is
+    created first (still shadowed by the real collection, so reads keep working)
+    and the real collection is deleted afterwards — no read gap.
+    """
+    from qdrant_client.models import (
+        CreateAlias,
+        CreateAliasOperation,
+        DeleteAlias,
+        DeleteAliasOperation,
+    )
+
+    with _write_lock:
+        aliases = _alias_map(client)
+        if logical in aliases:
+            previous = aliases[logical]
+            client.update_collection_aliases(
+                [
+                    DeleteAliasOperation(delete_alias=DeleteAlias(alias_name=logical)),
+                    CreateAliasOperation(
+                        create_alias=CreateAlias(
+                            collection_name=staging, alias_name=logical
+                        )
+                    ),
+                ]
+            )
+            if previous != staging and previous in _real_collections(client):
+                client.delete_collection(previous)
+        else:
+            client.update_collection_aliases(
+                [
+                    CreateAliasOperation(
+                        create_alias=CreateAlias(
+                            collection_name=staging, alias_name=logical
+                        )
+                    )
+                ]
+            )
+            if logical in _real_collections(client):
+                client.delete_collection(logical)
+        record_creation(logical)
+
+
+def cleanup_staging(client: QdrantClient) -> int:
+    """Drop orphaned staging collections from interrupted imports.
+
+    A staging collection that is still referenced by an alias is a completed
+    build awaiting use and is kept.
+    """
+    targeted = set(_alias_map(client).values())
+    removed = 0
+    for name in _real_collections(client):
+        if _is_staging(name) and name not in targeted:
+            client.delete_collection(name)
+            removed += 1
+    return removed
 
 
 def collection_info(client: QdrantClient, collection: str | None = None) -> dict | None:
