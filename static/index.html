@@ -2923,37 +2923,5 @@ function app() {
 }
 </script>
 
-<!-- 会话选中样式预览切换器（临时，仅 ?sessiondemo=1 时显示） -->
-<div class="sd-panel" id="sdPanel">
-    <span>会话选中样式</span>
-    <button type="button" data-v="a">A 柔和描边</button>
-    <button type="button" data-v="b">B 低饱和填充</button>
-    <button type="button" data-v="c">C 主题色文字</button>
-    <button type="button" data-v="d">D 深色卡片</button>
-    <button type="button" data-v="default">当前</button>
-</div>
-<script>
-(function () {
-    var params = new URLSearchParams(location.search);
-    if (!params.has('sessiondemo')) return;
-    var panel = document.getElementById('sdPanel');
-    var root = document.documentElement;
-    var value = params.get('sessiondemo') || 'a';
-    if (value === '1') value = 'a';
-    function apply(v) {
-        if (v && v !== 'default') root.setAttribute('data-session-demo', v);
-        else root.removeAttribute('data-session-demo');
-        panel.querySelectorAll('button').forEach(function (b) {
-            b.classList.toggle('on', b.dataset.v === v);
-        });
-    }
-    panel.classList.add('on');
-    apply(value);
-    panel.querySelectorAll('button').forEach(function (b) {
-        b.addEventListener('click', function () { apply(b.dataset.v); });
-    });
-})();
-</script>
-
 </body>
 </html>
