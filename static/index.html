@@ -1196,7 +1196,7 @@ function app() {
 
         async resumeIngestIfRunning() {
             try {
-                const res = await fetch('/api/ingest/progress');
+                const res = await fetch('/api/ingest/progress', { headers: this.authHeaders() });
                 const p = await res.json();
                 if (p && p.running) {
                     this.ingestLoading = true;
@@ -1920,7 +1920,7 @@ function app() {
                 this.ingestResult = await res.json();
                 if (this.ingestResult.status === 'busy') {
                     try {
-                        const p = await (await fetch('/api/ingest/progress')).json();
+                        const p = await (await fetch('/api/ingest/progress', { headers: this.authHeaders() })).json();
                         if (p && p.running) {
                             this.ingestProgress = p;
                             this.ingestStartTime = p.started_at ? p.started_at * 1000 : Date.now();
@@ -1952,7 +1952,7 @@ function app() {
             this.stopIngestPoll();
             const tick = async () => {
                 try {
-                    const res = await fetch('/api/ingest/progress');
+                    const res = await fetch('/api/ingest/progress', { headers: this.authHeaders() });
                     if (!res.ok) return;
                     const p = await res.json();
                     this.ingestProgress = p;
@@ -2022,7 +2022,7 @@ function app() {
                 const rid = this.ingestStartTime ? Math.round(this.ingestStartTime / 1000) : null;
                 await fetch('/api/ingest/cancel', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
                     body: JSON.stringify(rid ? { run_id: rid } : {}),
                 });
                 this.ingestStalled = false;

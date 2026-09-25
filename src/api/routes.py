@@ -250,6 +250,13 @@ def _visitor_vid(request: Request, response: Response) -> str | None:
     return resolve_visitor(request, response)
 
 
+def _ingest_owner(request: Request, response: Response) -> str:
+    """Progress/cancel scope key: the admin, or one specific visitor."""
+    if settings.demo_mode and not _is_admin(request):
+        return "v:" + resolve_visitor(request, response)
+    return "admin"
+
+
 def _shared_view_for(vid: str | None) -> str | None:
     """The shared collection display name this visitor is viewing, if any."""
     if not vid:
@@ -393,13 +400,6 @@ async def chat_admin_restore(
 
 @router.post("/ingest", response_model=IngestResponse)
 async def ingest(req: IngestRequest, request: Request, response: Response):
-    if ingest_progress.snapshot()["running"]:
-        return IngestResponse(
-            status="busy",
-            documents=0,
-            chunks=0,
-            error="已有导入正在进行中，请等待完成或先取消",
-        )
     if req.paths:
         for_ingest = list(dict.fromkeys(req.paths))
     else:
@@ -418,80 +418,100 @@ async def ingest(req: IngestRequest, request: Request, response: Response):
                 status="error", documents=0, chunks=0,
                 error="只能导入样例、共享文件或你自己上传的文件",
             )
-    ingest_progress.begin()
-    try:
-        result = await run_in_threadpool(
-            ingest_paths,
-            for_ingest,
-            recreate=req.recreate,
-            delete_missing=req.delete_missing,
-            progress=ingest_progress.set_phase,
-            collection=visitor_collection(request, response),
-        )
-    except Exception as exc:
-        cancelled = ingest_progress.is_cancelled()
-        ingest_progress.finish(
-            "cancelled" if cancelled else "error", 0, 0,
-            summary=None if cancelled else {"error": str(exc)},
-        )
-        if cancelled:
-            return IngestResponse(status="cancelled", documents=0, chunks=0, error="cancelled")
-        raise
-    if "error" in result:
-        cancelled = ingest_progress.is_cancelled() or result.get("error") == "cancelled"
-        ingest_progress.finish(
-            "cancelled" if cancelled else "error", 0, 0,
-            summary={"error": result["error"]},
-        )
+
+    owner = _ingest_owner(request, response)
+    if not ingest_progress.begin(owner):
         return IngestResponse(
-            status="cancelled" if cancelled else "error",
+            status="busy",
             documents=0,
             chunks=0,
-            error=result["error"],
+            error="已有导入正在进行中，请等待完成或先取消",
         )
-    ingest_progress.finish(
-        "done", 1, 1,
-        summary={
-            "documents": result.get("documents", 0),
-            "chunks": result.get("chunks", 0),
-            "added": result.get("added", 0),
-            "updated": result.get("updated", 0),
-            "unchanged": result.get("unchanged", 0),
-            "deleted": result.get("deleted", 0),
-        },
-    )
-    return IngestResponse(
-        status="ok",
-        documents=result.get("documents", 0),
-        chunks=result.get("chunks", 0),
-        added=result.get("added", 0),
-        updated=result.get("updated", 0),
-        unchanged=result.get("unchanged", 0),
-        deleted=result.get("deleted", 0),
-    )
+    token = ingest_progress.bind(owner)
+    try:
+        try:
+            result = await run_in_threadpool(
+                ingest_paths,
+                for_ingest,
+                recreate=req.recreate,
+                delete_missing=req.delete_missing,
+                progress=ingest_progress.set_phase,
+                collection=visitor_collection(request, response),
+            )
+        except Exception as exc:
+            cancelled = ingest_progress.is_cancelled()
+            ingest_progress.finish(
+                "cancelled" if cancelled else "error", 0, 0,
+                summary=None if cancelled else {"error": str(exc)},
+            )
+            if cancelled:
+                return IngestResponse(status="cancelled", documents=0, chunks=0, error="cancelled")
+            raise
+        if "error" in result:
+            cancelled = ingest_progress.is_cancelled() or result.get("error") == "cancelled"
+            ingest_progress.finish(
+                "cancelled" if cancelled else "error", 0, 0,
+                summary={"error": result["error"]},
+            )
+            return IngestResponse(
+                status="cancelled" if cancelled else "error",
+                documents=0,
+                chunks=0,
+                error=result["error"],
+            )
+        ingest_progress.finish(
+            "done", 1, 1,
+            summary={
+                "documents": result.get("documents", 0),
+                "chunks": result.get("chunks", 0),
+                "added": result.get("added", 0),
+                "updated": result.get("updated", 0),
+                "unchanged": result.get("unchanged", 0),
+                "deleted": result.get("deleted", 0),
+            },
+        )
+        return IngestResponse(
+            status="ok",
+            documents=result.get("documents", 0),
+            chunks=result.get("chunks", 0),
+            added=result.get("added", 0),
+            updated=result.get("updated", 0),
+            unchanged=result.get("unchanged", 0),
+            deleted=result.get("deleted", 0),
+        )
+    finally:
+        ingest_progress.unbind(token)
 
 
 @router.get("/ingest/progress")
-async def ingest_progress_endpoint():
-    return ingest_progress.snapshot()
+async def ingest_progress_endpoint(request: Request, response: Response):
+    return ingest_progress.snapshot(_ingest_owner(request, response))
 
 
 @router.post("/ingest/cancel")
-async def ingest_cancel(req: Optional[IngestCancelRequest] = None):
-    snap = ingest_progress.snapshot()
+async def ingest_cancel(
+    request: Request,
+    response: Response,
+    req: Optional[IngestCancelRequest] = None,
+):
+    owner = _ingest_owner(request, response)
+    snap = ingest_progress.snapshot(owner)
     logger.info(
-        "cancel requested: run_id=%s current_started_at=%s running=%s",
+        "cancel requested: owner=%s run_id=%s current_started_at=%s running=%s",
+        owner,
         None if req is None else req.run_id,
         snap.get("started_at"),
         snap.get("running"),
     )
-    if snap.get("running") and not ingest_progress.is_current_run(
+    if not snap.get("running"):
+        return snap
+    if not ingest_progress.is_current_run(
         None if req is None else req.run_id, snap
     ):
         logger.warning("cancel ignored for stale run_id=%s", None if req is None else req.run_id)
         return {**snap, "ignored_stale_cancel": True}
-    ingest_progress.cancel()
-    return snap
+    ingest_progress.cancel(owner)
+    return ingest_progress.snapshot(owner)
 
 
 @router.get("/status", response_model=StatusResponse)

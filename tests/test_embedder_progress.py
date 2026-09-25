@@ -48,15 +48,18 @@ def test_embed_documents_progress_advances_snapshot(monkeypatch):
         },
     )
     emb = embedder_mod.DenseEmbeddings("bge-m3")
-    progress.begin()
+    owner = "admin"
+    progress.begin(owner)
+    token = progress.bind(owner)
     texts = [f"t{i} " * 60 for i in range(200)]
 
     def cb(n):
         progress.set_phase("embed", n, len(texts) * 2)
 
     emb.embed_documents(texts, progress=cb)
-    snap = progress.snapshot()
+    snap = progress.snapshot(owner)
     progress.finish("done", 0, 0)
+    progress.unbind(token)
     assert snap["phase"] == "embed"
     assert snap["done"] == len(texts)
     assert snap["total"] == len(texts) * 2
