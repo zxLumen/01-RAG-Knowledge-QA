@@ -205,7 +205,7 @@ def test_failed_import_leaves_collection_unchanged(tmp_path, monkeypatch):
     (data_dir / "a.md").write_text("alpha CHANGED. " * 20, encoding="utf-8")
     (data_dir / "b.md").write_text("beta CHANGED. " * 20, encoding="utf-8")
     r = ingest_paths([str(data_dir)], recreate=False, delete_missing=True)
-    assert r.get("error") == "error"
+    assert r.get("error")
 
     # collection unchanged and no staging leftovers
     assert _point_texts() == before

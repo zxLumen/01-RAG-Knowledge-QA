@@ -6,7 +6,15 @@ import uuid
 from pathlib import Path
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, FieldCondition, Filter, MatchValue, VectorParams
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    SparseIndexParams,
+    SparseVectorParams,
+    VectorParams,
+)
 
 from src.config import settings
 from src.qa.llm_config import embedding_dim
@@ -62,7 +70,7 @@ def get_client() -> QdrantClient:
         if url == ":memory:" or url == "":
             _client = QdrantClient(":memory:", force_disable_check_same_thread=True)
         elif url.startswith("http"):
-            _client = QdrantClient(url=url)
+            _client = QdrantClient(url=url, api_key=settings.qdrant_api_key or None)
         else:
             _client = QdrantClient(path=url, force_disable_check_same_thread=True)
     return _client
@@ -143,15 +151,23 @@ def ensure_collection_unlocked(client: QdrantClient, recreate: bool = False) -> 
 
 
 def create_collection(client: QdrantClient, name: str) -> None:
-    """Create an empty collection under an explicit physical name."""
+    """Create an empty collection under an explicit physical name.
+
+    Vectors, sparse index and payload are stored on disk so a Qdrant server
+    deployment does not need to keep every collection resident in RAM. Local
+    (embedded) mode ignores ``on_disk``.
+    """
     client.create_collection(
         collection_name=name,
         vectors_config={
-            "dense": VectorParams(size=embedding_dim(), distance=Distance.COSINE),
+            "dense": VectorParams(
+                size=embedding_dim(), distance=Distance.COSINE, on_disk=True
+            ),
         },
         sparse_vectors_config={
-            "sparse": {},
+            "sparse": SparseVectorParams(index=SparseIndexParams(on_disk=True)),
         },
+        on_disk_payload=True,
     )
 
 
@@ -292,6 +308,16 @@ def cleanup_staging(client: QdrantClient) -> int:
             client.delete_collection(name)
             removed += 1
     return removed
+
+
+def collection_points(client: QdrantClient, collection: str) -> int:
+    """Point count of a collection (alias-aware); 0 when it is missing."""
+    try:
+        if not client.collection_exists(collection):
+            return 0
+        return int(client.get_collection(collection).points_count or 0)
+    except Exception:
+        return 0
 
 
 def collection_info(client: QdrantClient, collection: str | None = None) -> dict | None:

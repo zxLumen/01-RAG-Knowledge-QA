@@ -17,6 +17,7 @@ from src.vectorstore.context import current_collection, reset_collection, set_co
 from src.vectorstore.embedder import get_dense_embeddings, get_sparse_embeddings
 from src.vectorstore.store import (
     add_documents,
+    collection_points,
     copy_source_points,
     create_collection,
     delete_by_source,
@@ -133,16 +134,29 @@ def _deleted_sources(
     return deleted
 
 
+class QuotaExceededError(Exception):
+    """Raised when an import would push a collection past its point cap."""
+
+
 def ingest_paths(
     paths: list[str],
     recreate: bool = False,
     delete_missing: bool = True,
     progress: Callable[[str, int, int], None] | None = None,
     collection: str | None = None,
+    point_limit: int | None = None,
+    before_promote: Callable[[int], None] | None = None,
 ) -> dict:
     token = set_collection(collection) if collection else None
     try:
-        return _ingest_paths(paths, recreate, delete_missing, progress)
+        return _ingest_paths(
+            paths,
+            recreate,
+            delete_missing,
+            progress,
+            point_limit=point_limit,
+            before_promote=before_promote,
+        )
     finally:
         if token is not None:
             reset_collection(token)
@@ -159,11 +173,37 @@ def _deleted_row(src: str) -> dict:
     }
 
 
+def _limit_error(limit: int) -> str:
+    return f"知识库超出上限（{limit} 分块），请减少导入内容后重试"
+
+
+def _projected_points(
+    client,
+    logical: str,
+    existing: dict,
+    replaced_sources: set[str],
+    recreate: bool,
+    new_chunks: int,
+) -> int:
+    """Best-effort estimate of the collection size after this import."""
+    if recreate:
+        return new_chunks
+    current = collection_points(client, logical)
+    removed = sum(
+        int(existing[s].get("chunk_count") or 0)
+        for s in replaced_sources
+        if s in existing
+    )
+    return max(0, current - removed) + new_chunks
+
+
 def _ingest_paths(
     paths: list[str],
     recreate: bool = False,
     delete_missing: bool = True,
     progress: Callable[[str, int, int], None] | None = None,
+    point_limit: int | None = None,
+    before_promote: Callable[[int], None] | None = None,
 ) -> dict:
     started = time.monotonic()
     client = get_client()
@@ -287,6 +327,24 @@ def _ingest_paths(
         src = c["metadata"]["source"]
         chunk_counts[src] = chunk_counts.get(src, 0) + 1
 
+    if point_limit is not None:
+        # Fail fast (before spending embedding calls) if the projection is over.
+        estimated = _projected_points(
+            client, logical, existing, changed_sources | deleted_set, recreate, len(chunks)
+        )
+        if estimated > point_limit:
+            _record_session(
+                ", ".join(paths), recreate, len(entries), 0, "error",
+                _limit_error(point_limit), started,
+            )
+            if progress:
+                progress("done", 0, 0)
+            return {
+                "error": _limit_error(point_limit),
+                "documents": len(entries),
+                "chunks": 0,
+            }
+
     staging = staging_name(logical)
     create_collection(client, staging)
     promoted = False
@@ -299,10 +357,16 @@ def _ingest_paths(
             progress("embed", 0, embed_total)
         _embed_into(client, staging, chunks, progress, embed_total=embed_total)
 
+        staging_points = collection_points(client, staging)
+        if point_limit is not None and staging_points > point_limit:
+            raise QuotaExceededError(_limit_error(point_limit))
+        if before_promote is not None:
+            before_promote(staging_points)
         promote_collection(client, logical, staging)
         promoted = True
     except Exception as e:
-        traceback.print_exc()
+        if not isinstance(e, QuotaExceededError):
+            traceback.print_exc()
         cancelled = ingest_progress.is_cancelled() or "cancelled" in str(e)
         phase = "cancelled" if cancelled else "error"
         if not promoted:
@@ -321,7 +385,8 @@ def _ingest_paths(
         )
         if progress:
             progress("done", 0, 0)
-        return {"error": phase, "documents": len(entries), "chunks": 0}
+        message = "cancelled" if cancelled else str(e)
+        return {"error": message, "documents": len(entries), "chunks": 0}
 
     files = []
     added = updated = unchanged_count = 0

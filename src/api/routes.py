@@ -102,6 +102,26 @@ def require_admin(
         raise HTTPException(status_code=401, detail="需要管理员令牌（ADMIN_TOKEN）")
 
 
+_mint_lock = threading.Lock()
+_mint_hits: dict[str, list[float]] = {}
+
+
+def _allow_new_identity(ip: str) -> bool:
+    """Rate-limit how many brand-new visitor identities one IP may mint."""
+    limit = settings.visitor_mint_per_hour
+    if limit <= 0:
+        return True
+    now = time.time()
+    with _mint_lock:
+        hits = [t for t in _mint_hits.get(ip, []) if now - t < 3600]
+        if len(hits) >= limit:
+            _mint_hits[ip] = hits
+            return False
+        hits.append(now)
+        _mint_hits[ip] = hits
+    return True
+
+
 def resolve_visitor(request: Request, response: Response) -> str:
     """Return the visitor id from the cookie, minting one if absent.
 
@@ -109,6 +129,9 @@ def resolve_visitor(request: Request, response: Response) -> str:
     """
     vid = request.cookies.get(visitor.VISITOR_COOKIE)
     if not visitor.is_valid_id(vid):
+        ip = request.client.host if request.client else "?"
+        if not _allow_new_identity(ip):
+            raise HTTPException(status_code=429, detail="创建访客过于频繁，请稍后再试")
         vid = visitor.new_visitor_id()
         response.set_cookie(
             visitor.VISITOR_COOKIE,
@@ -404,9 +427,10 @@ async def ingest(req: IngestRequest, request: Request, response: Response):
         for_ingest = list(dict.fromkeys(req.paths))
     else:
         for_ingest = [req.path]
+    visitor_vid: str | None = None
     if settings.demo_mode and not _is_admin(request):
-        vid = resolve_visitor(request, response)
-        allowed = _visitor_read_roots(vid)
+        visitor_vid = resolve_visitor(request, response)
+        allowed = _visitor_read_roots(visitor_vid)
         clean = []
         for path in for_ingest:
             resolved = (Path.cwd() / path).resolve()
@@ -418,6 +442,14 @@ async def ingest(req: IngestRequest, request: Request, response: Response):
                 status="error", documents=0, chunks=0,
                 error="只能导入样例、共享文件或你自己上传的文件",
             )
+
+    point_limit = settings.visitor_max_points if visitor_vid else None
+    before_promote = None
+    if visitor_vid:
+        budget = settings.visitor_global_max_points
+
+        def before_promote(staging_points: int) -> None:
+            visitor.ensure_global_capacity(visitor_vid, staging_points, budget)
 
     owner = _ingest_owner(request, response)
     if not ingest_progress.begin(owner):
@@ -437,6 +469,8 @@ async def ingest(req: IngestRequest, request: Request, response: Response):
                 delete_missing=req.delete_missing,
                 progress=ingest_progress.set_phase,
                 collection=visitor_collection(request, response),
+                point_limit=point_limit,
+                before_promote=before_promote,
             )
         except Exception as exc:
             cancelled = ingest_progress.is_cancelled()

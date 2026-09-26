@@ -5,6 +5,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
     qdrant_url: str = "http://localhost:6333"
+    # Optional API key when QDRANT_URL points at a Qdrant server.
+    qdrant_api_key: str = ""
     qdrant_collection: str = "knowledge_base"
     import_db_path: str = "./qdrant_data/imports.db"
     chat_db_path: str = "./qdrant_data/chats.db"
@@ -34,6 +36,15 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 0
     # Visitor isolation (per-cookie data dir + collection). Enable for public demos.
     demo_mode: bool = False
+
+    # Visitor knowledge-base size caps (points/chunks). Only apply to visitors,
+    # never to the admin's own collections. The global cap counts all visitor
+    # collections; when exceeded, least-recently-active visitors are evicted
+    # (their collection only) to make room.
+    visitor_max_points: int = 3000
+    visitor_global_max_points: int = 30000
+    # Max new visitor identities minted per IP per hour (0 = unlimited).
+    visitor_mint_per_hour: int = 20
 
     chunk_size: int = 500
     chunk_overlap: int = 75

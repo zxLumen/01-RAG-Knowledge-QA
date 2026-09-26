@@ -10,12 +10,15 @@ global storage is capped at ``GLOBAL_QUOTA`` (oldest visitors are evicted first)
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 import shutil
 import threading
 import time
 from pathlib import Path
+
+logger = logging.getLogger("rag")
 
 VISITOR_COOKIE = "rag_visitor"
 VISITOR_TTL_DAYS = 7
@@ -84,6 +87,80 @@ def collection_name(visitor_id: str) -> str:
     if not is_valid_id(visitor_id):
         raise ValueError("invalid visitor id")
     return f"visitor_{visitor_id.lower()}"
+
+
+def visitor_ids_by_age() -> list[tuple[str, float]]:
+    """Valid visitor ids paired with their last-seen time, oldest first."""
+    with _lock:
+        state = _load_state()
+        items = [
+            (vid, float(ts))
+            for vid, ts in state.get("visitors", {}).items()
+            if is_valid_id(vid)
+        ]
+    items.sort(key=lambda x: x[1])
+    return items
+
+
+def visitor_points_total(client=None) -> int:
+    """Total points across *visitor* collections only (admin excluded)."""
+    from src.vectorstore.store import collection_points, get_client, list_collections
+
+    client = client or get_client()
+    total = 0
+    for name in list_collections(client):
+        if name.startswith("visitor_") and is_valid_id(name[len("visitor_"):]):
+            total += collection_points(client, name)
+    return total
+
+
+def ensure_global_capacity(
+    exclude_vid: str | None, need_points: int, budget: int, client=None
+) -> list[str]:
+    """Evict least-recently-active visitors' knowledge bases until ``need_points``
+    fits within ``budget``.
+
+    Only visitor collections and their import ledger are removed; uploads,
+    chats and — above all — admin collections are never touched. Raises
+    ``QuotaExceededError`` when even after eviction it still does not fit.
+    """
+    from src.imports.store import delete_collection_sessions
+    from src.vectorstore.store import collection_points, delete_collection, get_client
+
+    client = client or get_client()
+    exclude = (exclude_vid or "").lower()
+    candidates: list[tuple[float, str, str, int]] = []
+    others_total = 0
+    for vid, ts in visitor_ids_by_age():
+        if vid == exclude:
+            continue
+        name = collection_name(vid)  # only ever visitor_<valid-id>
+        pts = collection_points(client, name)
+        if pts <= 0:
+            continue
+        candidates.append((ts, vid, name, pts))
+        others_total += pts
+
+    evicted: list[str] = []
+    for _ts, vid, name, pts in candidates:
+        if others_total + need_points <= budget:
+            break
+        try:
+            delete_collection(client, name)
+            delete_collection_sessions(name)
+        except Exception:
+            logger.exception("failed to evict visitor collection %s", name)
+            continue
+        others_total -= pts
+        evicted.append(vid)
+    if evicted:
+        logger.info("evicted %d visitor collection(s): %s", len(evicted), evicted)
+
+    if others_total + need_points > budget:
+        from src.ingest.pipeline import QuotaExceededError
+
+        raise QuotaExceededError(f"全局知识库容量已满（上限 {budget} 分块），请稍后再试")
+    return evicted
 
 
 def get_view(visitor_id: str) -> str | None:
