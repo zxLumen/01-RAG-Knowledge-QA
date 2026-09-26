@@ -34,6 +34,15 @@ def test_distinct_filenames_groups_by_metadata(monkeypatch):
     assert by_name == {"x.md": 2, "y.md": 1}
 
 
+def test_collections_use_on_disk_storage(monkeypatch):
+    monkeypatch.setattr(settings, "qdrant_collection", "test_ondisk")
+    client = QdrantClient(":memory:")
+    ensure_collection(client)
+    info = client.get_collection("test_ondisk")
+    assert info.config.params.vectors["dense"].on_disk is True
+    assert info.config.params.sparse_vectors["sparse"].index.on_disk is True
+
+
 def test_distinct_filenames_empty_collection(monkeypatch):
     monkeypatch.setattr(settings, "qdrant_collection", "test_empty")
     client = QdrantClient(":memory:")

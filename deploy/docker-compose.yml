@@ -1,7 +1,7 @@
 # RAG 知识库问答 —— 独立部署编排(与主页分开,但复用主页的 Caddy)
 #
-# 组网:本服务加入主页 Caddy 所在的外部网络(默认 docker_web),
-#       主页 Caddy 按 rag.<域名> 反代到 rag:8000。
+# 组网:rag 加入主页 Caddy 所在的外部网络(默认 docker_web)对外提供 8000;
+#       向量库用独立 qdrant 服务,只挂在 rag-internal 私有网络,不对外暴露端口。
 # 更新:CI 构建镜像推 GHCR → 服务器 `RAG_IMAGE_TAG=<sha> ./deploy.sh`。
 #
 # 用法:
@@ -14,8 +14,8 @@ services:
     restart: unless-stopped
     env_file: .env
     environment:
-      # 固定用容器内本地 qdrant(由 rag-data 卷持久化)
-      QDRANT_URL: ./qdrant_data
+      # 向量库用独立的 qdrant 服务;元数据(imports/chats/admin/visitors)仍在 rag-data 卷
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
       # 时区(影响导入记录时间戳与日志)
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
@@ -23,10 +23,33 @@ services:
       - rag-uploads:/app/data/visitors
     expose:
       - "8000"
-    # 2C2G 机器防止 RAG 吃满内存(默认 512m,可按需调大)
+    # 向量已移出本进程,内存需求大幅下降
     mem_limit: ${RAG_MEM_LIMIT:-512m}
+    depends_on:
+      qdrant:
+        condition: service_started
     networks:
       - web
+      - rag-internal
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  qdrant:
+    image: qdrant/qdrant:${QDRANT_IMAGE_TAG:-v1.19.0}
+    container_name: rag-qdrant
+    restart: unless-stopped
+    environment:
+      # 私有网络内可选;设置后需在 .env 同步 QDRANT_API_KEY
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:-}
+    volumes:
+      - qdrant-data:/qdrant/storage
+    # 不发布端口,仅 rag-internal 内可达
+    mem_limit: ${QDRANT_MEM_LIMIT:-800m}
+    networks:
+      - rag-internal
     logging:
       driver: json-file
       options:
@@ -36,8 +59,11 @@ services:
 volumes:
   rag-data:
   rag-uploads:
+  qdrant-data:
 
 networks:
   web:
     external: true
     name: ${WEB_NETWORK:-docker_web}
+  rag-internal:
+    driver: bridge
