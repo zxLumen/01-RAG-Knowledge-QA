@@ -173,8 +173,14 @@ def _deleted_row(src: str) -> dict:
     }
 
 
-def _limit_error(limit: int) -> str:
-    return f"知识库超出上限（{limit} 分块），请减少导入内容后重试"
+def _limit_error(limit: int, actual: int | None = None) -> str:
+    """Quota error naming the real numbers — visitors have no other feedback."""
+    if actual is None:
+        return f"知识库超出上限（{limit} 分块），请减少导入内容后重试"
+    return (
+        f"知识库超出上限：导入后约 {actual} 分块 / 上限 {limit} 分块，"
+        f"请减少约 {actual - limit} 分块后重试"
+    )
 
 
 def _projected_points(
@@ -335,12 +341,12 @@ def _ingest_paths(
         if estimated > point_limit:
             _record_session(
                 ", ".join(paths), recreate, len(entries), 0, "error",
-                _limit_error(point_limit), started,
+                _limit_error(point_limit, estimated), started,
             )
             if progress:
                 progress("done", 0, 0)
             return {
-                "error": _limit_error(point_limit),
+                "error": _limit_error(point_limit, estimated),
                 "documents": len(entries),
                 "chunks": 0,
             }
@@ -359,7 +365,7 @@ def _ingest_paths(
 
         staging_points = collection_points(client, staging)
         if point_limit is not None and staging_points > point_limit:
-            raise QuotaExceededError(_limit_error(point_limit))
+            raise QuotaExceededError(_limit_error(point_limit, staging_points))
         if before_promote is not None:
             before_promote(staging_points)
         promote_collection(client, logical, staging)

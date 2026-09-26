@@ -102,26 +102,6 @@ def require_admin(
         raise HTTPException(status_code=401, detail="需要管理员令牌（ADMIN_TOKEN）")
 
 
-_mint_lock = threading.Lock()
-_mint_hits: dict[str, list[float]] = {}
-
-
-def _allow_new_identity(ip: str) -> bool:
-    """Rate-limit how many brand-new visitor identities one IP may mint."""
-    limit = settings.visitor_mint_per_hour
-    if limit <= 0:
-        return True
-    now = time.time()
-    with _mint_lock:
-        hits = [t for t in _mint_hits.get(ip, []) if now - t < 3600]
-        if len(hits) >= limit:
-            _mint_hits[ip] = hits
-            return False
-        hits.append(now)
-        _mint_hits[ip] = hits
-    return True
-
-
 def resolve_visitor(request: Request, response: Response) -> str:
     """Return the visitor id from the cookie, minting one if absent.
 
@@ -130,7 +110,7 @@ def resolve_visitor(request: Request, response: Response) -> str:
     vid = request.cookies.get(visitor.VISITOR_COOKIE)
     if not visitor.is_valid_id(vid):
         ip = request.client.host if request.client else "?"
-        if not _allow_new_identity(ip):
+        if not visitor.allow_new_identity(ip):
             raise HTTPException(status_code=429, detail="创建访客过于频繁，请稍后再试")
         vid = visitor.new_visitor_id()
         response.set_cookie(

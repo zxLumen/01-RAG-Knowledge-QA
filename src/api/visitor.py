@@ -18,6 +18,8 @@ import threading
 import time
 from pathlib import Path
 
+from src.config import settings
+
 logger = logging.getLogger("rag")
 
 VISITOR_COOKIE = "rag_visitor"
@@ -34,6 +36,8 @@ DATA_DIR = Path("data")
 SAMPLES_DIR = DATA_DIR / "samples"
 VISITORS_DIR = DATA_DIR / "visitors"
 STATE_PATH = Path("qdrant_data/visitors.json")
+MINT_STATE_PATH = Path("qdrant_data/mint_hits.json")
+MINT_WINDOW_SECONDS = 3600
 
 _lock = threading.RLock()
 _state: dict | None = None
@@ -69,6 +73,53 @@ def _save_state() -> None:
 
 def new_visitor_id() -> str:
     return secrets.token_hex(8)
+
+
+def allow_new_identity(ip: str) -> bool:
+    """Rate-limit how many brand-new identities one IP may mint per hour.
+
+    Persisted to disk on purpose: an in-memory counter is wiped by every
+    redeploy, which would let a caller reset the limit just by waiting for a
+    restart. Fails open if the file cannot be written — a rate limiter must
+    never be the reason the site stops serving.
+    """
+    limit = settings.visitor_mint_per_hour
+    if limit <= 0:
+        return True
+    now = time.time()
+    with _lock:
+        try:
+            raw = json.loads(MINT_STATE_PATH.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        live: dict[str, list[float]] = {}
+        for key, stamps in raw.items():
+            kept = []
+            for t in stamps if isinstance(stamps, list) else []:
+                try:
+                    ts = float(t)
+                except (TypeError, ValueError):
+                    continue
+                if now - ts < MINT_WINDOW_SECONDS:
+                    kept.append(ts)
+            if kept:
+                live[str(key)] = kept
+        hits = live.get(ip, [])
+        allowed = len(hits) < limit
+        if allowed:
+            hits = [*hits, now]
+            live[ip] = hits
+        try:
+            MINT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            tmp = MINT_STATE_PATH.with_name(MINT_STATE_PATH.name + ".tmp")
+            tmp.write_text(json.dumps(live), encoding="utf-8")
+            tmp.replace(MINT_STATE_PATH)
+        except OSError:
+            logger.warning("mint rate-limit state not persisted: %s", MINT_STATE_PATH)
+            return True
+    return allowed
 
 
 def is_valid_id(visitor_id: str | None) -> bool:

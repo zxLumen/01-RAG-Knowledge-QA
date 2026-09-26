@@ -1,3 +1,4 @@
+import json
 import time
 import uuid
 
@@ -30,11 +31,9 @@ def _setup(tmp_path, monkeypatch):
     monkeypatch.setattr("src.config.settings.qdrant_url", ":memory:")
     monkeypatch.setattr("src.config.settings.qdrant_collection", "test_kb")
     monkeypatch.setattr(visitor, "STATE_PATH", tmp_path / "visitors.json")
+    monkeypatch.setattr(visitor, "MINT_STATE_PATH", tmp_path / "mint_hits.json")
     monkeypatch.setattr(visitor, "VISITORS_DIR", tmp_path / "visitors")
     visitor._state = None
-    import src.api.routes as routes
-
-    monkeypatch.setattr(routes, "_mint_hits", {})
     store._client = None
 
 
@@ -138,20 +137,51 @@ def test_global_capacity_raises_when_nothing_to_evict(tmp_path, monkeypatch):
 
 
 def test_mint_rate_limit(tmp_path, monkeypatch):
-    import src.api.routes as routes
+    monkeypatch.setattr(visitor, "MINT_STATE_PATH", tmp_path / "mint_hits.json")
+    monkeypatch.setattr(config.settings, "visitor_mint_per_hour", 2)
 
-    monkeypatch.setattr(routes.settings, "visitor_mint_per_hour", 2)
-    monkeypatch.setattr(routes, "_mint_hits", {})
-
-    assert routes._allow_new_identity("1.2.3.4") is True
-    assert routes._allow_new_identity("1.2.3.4") is True
-    assert routes._allow_new_identity("1.2.3.4") is False
+    assert visitor.allow_new_identity("1.2.3.4") is True
+    assert visitor.allow_new_identity("1.2.3.4") is True
+    assert visitor.allow_new_identity("1.2.3.4") is False
     # other IPs unaffected
-    assert routes._allow_new_identity("5.6.7.8") is True
+    assert visitor.allow_new_identity("5.6.7.8") is True
 
     # 0 disables the limit
-    monkeypatch.setattr(routes.settings, "visitor_mint_per_hour", 0)
-    assert routes._allow_new_identity("1.2.3.4") is True
+    monkeypatch.setattr(config.settings, "visitor_mint_per_hour", 0)
+    assert visitor.allow_new_identity("1.2.3.4") is True
+
+
+def test_mint_rate_limit_survives_restart(tmp_path, monkeypatch):
+    """A redeploy must not hand the caller a fresh allowance."""
+    path = tmp_path / "mint_hits.json"
+    monkeypatch.setattr(visitor, "MINT_STATE_PATH", path)
+    monkeypatch.setattr(config.settings, "visitor_mint_per_hour", 1)
+
+    assert visitor.allow_new_identity("9.9.9.9") is True
+    assert path.exists()
+
+    # simulate a restart: the counter lives on disk, nothing is cached
+    assert visitor.allow_new_identity("9.9.9.9") is False
+
+    # stale stamps age out instead of blocking forever, and the file keeps only
+    # live buckets so it cannot grow without bound
+    path.write_text(
+        json.dumps({"9.9.9.9": [time.time() - 7200], "empty.bucket": []}),
+        encoding="utf-8",
+    )
+    assert visitor.allow_new_identity("9.9.9.9") is True
+    live = json.loads(path.read_text(encoding="utf-8"))
+    assert set(live) == {"9.9.9.9"}
+    assert len(live["9.9.9.9"]) == 1
+
+
+def test_limit_error_names_actual_and_gap():
+    from src.ingest.pipeline import _limit_error
+
+    msg = _limit_error(5000, 5310)
+    assert "5000" in msg and "5310" in msg and "310" in msg
+    # without an actual count it still produces a usable message
+    assert "5000" in _limit_error(5000)
 
 
 def _cleanup(client, *vids):

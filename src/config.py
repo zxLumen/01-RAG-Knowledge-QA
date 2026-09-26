@@ -41,8 +41,10 @@ class Settings(BaseSettings):
     # never to the admin's own collections. The global cap counts all visitor
     # collections; when exceeded, least-recently-active visitors are evicted
     # (their collection only) to make room.
-    visitor_max_points: int = 3000
-    visitor_global_max_points: int = 30000
+    # 5000 is sized so any single shared doc imports (largest is ~3000 chunks),
+    # which still leaves a visitor well under half of the global budget.
+    visitor_max_points: int = 5000
+    visitor_global_max_points: int = 150000
     # Max new visitor identities minted per IP per hour (0 = unlimited).
     visitor_mint_per_hour: int = 20
 
