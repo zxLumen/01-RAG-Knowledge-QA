@@ -27,8 +27,21 @@ ruff check src tests
 
 - **默认只动线下（本地）环境**：除非用户当次明确说「上线/部署」，否则不要 push、不要部署服务器。
   「本地验证」不等于「可以上线」；需要上线必须得到当次显式指令（不要沿用之前的授权）。
-- 上线流程：`git push`（CI 构建镜像推 GHCR）→ 服务器 `cd /home/ubuntu/rag && RAG_IMAGE_TAG=<sha> ./deploy.sh`。
-- 服务器：`ubuntu@124.156.168.32`，域名 `rag.zxlumen.cn`，复用主页 Caddy + `docker_web` 网络。
+- 上线流程：`git push`（CI 构建镜像推 GHCR）→ 服务器 `cd /home/ubuntu/rag && ./deploy.sh <sha>`。
+  `deploy.sh` 会按 tag 同步 `docker-compose.yml`，所以**服务器 `.env` 的 `RAG_IMAGE_TAG` 不会自动更新**，
+  手工 `docker compose up -d` 前务必先改 `.env`，否则会回滚到旧镜像。
+- 服务器：`ubuntu@43.161.241.32`（2026-09 由 124.156.168.32 迁来），目录 `/home/ubuntu/rag`，
+  域名 `rag.zxlumen.cn`，复用主页 Caddy + `docker_web` 网络。
+  - `rag` 只 `expose 8000`（未发布端口），宿主机 `curl localhost:8000` 连不上；
+    排查用 `docker exec rag curl -fsS http://localhost:8000/api/version` 或走公网域名。
+  - 服务器专用改动写在 `docker-compose.override.yml`（当前挂载 `data/go`、`data/python-docs`），
+    不会被 `deploy.sh` 的 compose 同步覆盖。
+- **向量库已是独立 Qdrant 服务**（`qdrant/qdrant:v1.19.0`，容器 `rag-qdrant`）：
+  - 只挂 `rag_rag-internal` 私有网络、不发布端口；`rag` 通过 `QDRANT_URL=http://qdrant:6333` 访问。
+  - 集合创建时 dense/sparse/payload 全部 `on_disk`；`rag` 内存降到 ~160m（原先内嵌需 ~900m）。
+  - 迁移/回滚：旧内嵌数据仍完整保留在 `rag_rag-data` 卷（`collection/`，188M）。
+    再迁回去只需把 `.env` 的 `QDRANT_URL` 改回 `./qdrant_data` 并 `docker compose up -d rag`；
+    反向迁移用 `python -m src.migrate_server --src <内嵌路径> --dst http://qdrant:6333`（需先停 `rag`）。
 
 ## 约定
 
