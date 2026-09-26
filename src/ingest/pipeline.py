@@ -175,7 +175,7 @@ def _deleted_row(src: str) -> dict:
 
 def _limit_error(limit: int, actual: int | None = None) -> str:
     """Quota error naming the real numbers — visitors have no other feedback."""
-    if actual is None:
+    if actual is None or actual <= limit:
         return f"知识库超出上限（{limit} 分块），请减少导入内容后重试"
     return (
         f"知识库超出上限：导入后约 {actual} 分块 / 上限 {limit} 分块，"

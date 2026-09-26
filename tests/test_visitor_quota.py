@@ -180,7 +180,8 @@ def test_limit_error_names_actual_and_gap():
 
     msg = _limit_error(5000, 5310)
     assert "5000" in msg and "5310" in msg and "310" in msg
-    # without an actual count it still produces a usable message
+    # an under-limit "actual" must never render a nonsense negative gap
+    assert "-4662" not in _limit_error(5000, 338)
     assert "5000" in _limit_error(5000)
 
 
