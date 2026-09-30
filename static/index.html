@@ -548,7 +548,7 @@
                 <h2 class="text-xl font-semibold">管理员登录</h2>
                 <p class="text-sm text-gray-400">管理面板用于配置模型与嵌入。请输入 ADMIN_TOKEN 登录。</p>
                 <div class="flex items-center justify-center gap-3 pt-2">
-                    <input x-model="adminToken" type="password" placeholder="ADMIN_TOKEN"
+                    <input x-model="loginToken" type="password" placeholder="ADMIN_TOKEN"
                            class="input-field rounded-lg px-3 py-2 text-sm font-mono w-64"
                            @keydown.enter="loginAdmin()">
                     <button @click="loginAdmin()" class="btn-send text-white px-4 py-2 rounded-lg text-sm font-medium">登录</button>
@@ -1148,6 +1148,7 @@ function app() {
         llmProviders: [],
         embeddingDims: {},
         adminToken: (() => { try { return localStorage.getItem('ragAdminToken') || ''; } catch (e) { return ''; } })(),
+        loginToken: '',
         isAdmin: false,
         adminMsg: '',
         pwdForm: { old: '', next: '', confirm: '', busy: false, msg: '', ok: true },
@@ -1356,8 +1357,12 @@ function app() {
             try {
                 const res = await fetch('/api/admin/verify', { method: 'POST', headers: { 'X-Admin-Token': token } });
                 this.isAdmin = res.ok;
-                if (!res.ok) { try { localStorage.setItem('ragAdminToken', ''); } catch (e) {} }
-            } catch (e) { this.isAdmin = false; }
+                if (!res.ok) { this.adminToken = ''; try { localStorage.setItem('ragAdminToken', ''); } catch (e) {} }
+            } catch (e) {
+                this.isAdmin = false;
+                this.adminToken = '';
+                try { localStorage.setItem('ragAdminToken', ''); } catch (e) {}
+            }
         },
 
         isAsciiPassword(s) {
@@ -1369,7 +1374,7 @@ function app() {
         },
 
         async loginAdmin() {
-            const token = (this.adminToken || '').trim();
+            const token = (this.loginToken || '').trim();
             if (!token) { this.adminMsg = '请输入 ADMIN_TOKEN'; return; }
             if (!this.isAsciiPassword(token)) {
                 this.adminMsg = '密码/令牌仅支持 ASCII 可见字符（不能含中文等）';
@@ -1382,6 +1387,8 @@ function app() {
                     headers: { 'X-Admin-Token': token },
                 });
                 if (!res.ok) { this.adminMsg = '令牌无效或服务端未设置 ADMIN_TOKEN'; return; }
+                this.adminToken = token;
+                this.loginToken = '';
                 this.isAdmin = true;
                 try { localStorage.setItem('ragAdminToken', token); } catch (e) {}
                 this.adminMsg = '';
@@ -2139,7 +2146,7 @@ function app() {
                 const fd = new FormData();
                 for (const f of files) fd.append('files', f);
                 const headers = {};
-                if (this.adminToken) headers['X-Admin-Token'] = this.adminToken;
+                if (this.isAdmin && this.adminToken) headers['X-Admin-Token'] = this.adminToken;
                 const res = await fetch('/api/upload', { method: 'POST', headers, body: fd });
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
@@ -2353,13 +2360,13 @@ function app() {
 
         adminHeaders() {
             const h = { 'Content-Type': 'application/json' };
-            if (this.adminToken) h['X-Admin-Token'] = this.adminToken;
+            if (this.isAdmin && this.adminToken) h['X-Admin-Token'] = this.adminToken;
             return h;
         },
 
         authHeaders() {
             const h = {};
-            if (this.adminToken) h['X-Admin-Token'] = this.adminToken;
+            if (this.isAdmin && this.adminToken) h['X-Admin-Token'] = this.adminToken;
             return h;
         },
 
