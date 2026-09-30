@@ -30,8 +30,9 @@ ruff check src tests
 - 上线流程：`git push`（CI 构建镜像推 GHCR）→ 服务器 `cd /home/ubuntu/rag && ./deploy.sh <sha>`。
   `deploy.sh` 会按 tag 同步 `docker-compose.yml`，所以**服务器 `.env` 的 `RAG_IMAGE_TAG` 不会自动更新**，
   手工 `docker compose up -d` 前务必先改 `.env`，否则会回滚到旧镜像。
-- 服务器：`ubuntu@43.161.241.32`（2026-09 由 124.156.168.32 迁来），目录 `/home/ubuntu/rag`，
-  域名 `rag.zxlumen.cn`，复用主页 Caddy + `docker_web` 网络。
+- 服务器：`ubuntu@43.161.222.62`（域名 `rag.zxlumen.cn` 的实际解析；此前记录为 43.161.241.32，
+  .32 现已是另一台机器，SSH 主机密钥不同，若见 host key 告警属预期），目录 `/home/ubuntu/rag`，
+  复用主页 Caddy + `docker_web` 网络。
   - `rag` 只 `expose 8000`（未发布端口），宿主机 `curl localhost:8000` 连不上；
     排查用 `docker exec rag curl -fsS http://localhost:8000/api/version` 或走公网域名。
   - 服务器专用改动写在 `docker-compose.override.yml`（当前挂载 `data/go`、`data/python-docs`），
