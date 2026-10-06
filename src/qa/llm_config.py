@@ -70,12 +70,15 @@ def mask_key(value: str | None) -> str:
 
 
 def _env_default_profile() -> dict:
-    provider = settings.llm_provider or "ollama"
+    provider = settings.llm_provider or "zx-gateway"
     protocol = providers.protocol_for(provider)
     base_url = settings.llm_base_url or providers.default_base_url(provider)
     if provider == "ollama" and not base_url:
         base_url = settings.ollama_base_url
-    model = settings.llm_model or settings.ollama_model
+    model = settings.llm_model or (settings.ollama_model if provider == "ollama" else "")
+    api_key = settings.llm_api_key or (
+        os.environ.get("ZX_AI_APP_TOKEN", "") if provider == "zx-gateway" else ""
+    )
     preset = providers.get_provider(provider)
     return {
         "id": _new_id(),
@@ -83,7 +86,7 @@ def _env_default_profile() -> dict:
         "provider": provider,
         "protocol": protocol,
         "base_url": base_url,
-        "api_key": settings.llm_api_key or "",
+        "api_key": api_key,
         "model": model,
         "temperature": settings.llm_temperature,
     }

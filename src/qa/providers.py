@@ -12,6 +12,8 @@ the provider (a valid API key is required); no preset fallback is used.
 
 from __future__ import annotations
 
+import os
+
 PROTOCOL_OLLAMA = "ollama"
 PROTOCOL_OPENAI = "openai"
 PROTOCOLS = (PROTOCOL_OLLAMA, PROTOCOL_OPENAI)
@@ -89,6 +91,14 @@ PROVIDERS: list[dict] = [
         "base_url": "https://opencode.ai/zen/go/v1",
         "env": "OPENCODE_API_KEY",
         "embeddings": False,
+    },
+    {
+        "id": "zx-gateway",
+        "name": "博客 AI 网关",
+        "protocol": PROTOCOL_OPENAI,
+        "base_url": os.environ.get("ZX_AI_GATEWAY_URL") or "http://localhost:3000/api/ai/v1",
+        "env": "ZX_AI_APP_TOKEN",
+        "embeddings": True,
     },
     {
         "id": "custom",

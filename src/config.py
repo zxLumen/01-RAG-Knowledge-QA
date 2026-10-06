@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
 
     # LLM provider defaults (overridden by qdrant_data/llm_config.json)
-    llm_provider: str = "ollama"
+    llm_provider: str = "zx-gateway"
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = ""
@@ -48,13 +48,30 @@ class Settings(BaseSettings):
     # Max new visitor identities minted per IP per hour (0 = unlimited).
     visitor_mint_per_hour: int = 20
 
+    # Retrieval tuning defaults. Env vars set these; the runtime values are
+    # held in qdrant_data/retrieval_config.json via src.retrieval.config.
     chunk_size: int = 500
     chunk_overlap: int = 75
 
     top_k: int = 20
     chunks_per_file: int = 3
-    rerank_top_k: int = 5
+    # Post-selection cap on chunks handed to the LLM (0 = no cap).
+    rerank_top_k: int = 0
     rrf_k: int = 60
+
+    # Hybrid retrieval (dense + sparse/BM25 fused with weighted RRF).
+    hybrid_enabled: bool = True
+    dense_weight: float = 1.0
+    sparse_weight: float = 1.0
+    # Per-channel recall pool = max(top_k * candidate_multiplier, candidate_min).
+    candidate_multiplier: int = 4
+    candidate_min: int = 24
+    # Legacy keyword channel (used as another RRF channel).
+    keyword_boost: float = 1.1
+    keyword_limit: int = 5
+    # Context assembly budget (characters) and optional dense score floor.
+    max_context_chars: int = 4000
+    min_score: float = 0.0
 
 
 settings = Settings()
