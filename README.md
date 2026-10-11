@@ -4,8 +4,9 @@
 
 ## 特性
 
-- **混合检索**：dense（bge-m3 向量相似度）+ 关键词（Text 匹配加权）双路召回
+- **真·混合检索**：dense（bge-m3 余弦）+ sparse（FastEmbed BM25）+ 关键词三路召回，按加权 RRF 融合；旧集合（无 sparse 向量）自动回退 dense+关键词
 - **文件级去重**：top-k 检索保证「不同文件数 ≤ k」，同一文件最多保留 `chunks_per_file` 个高分 chunk，避免单个长文档垄断上下文
+- **检索参数可运行时调**：管理面板「检索设置」可调 top_k / 候选池 / RRF k / 各路权重 / 上下文预算 / chunk 等，落盘 `qdrant_data/retrieval_config.json`，即时生效无需重启
 - **多厂商模型管理**：内置 OpenAI / DeepSeek / 智谱 / 通义 / Kimi / 硅基流动 / OpenRouter / **OpenCode Zen / OpenCode Go** / 本地 Ollama 预设；**对话模型与嵌入模型都是多档案模式**（新建/编辑/删除/激活切换）
 - **模型名下拉选择**：从厂商实时拉取（Ollama `/api/tags` 或 OpenAI `GET /models`），带筛选框；**不回退预设**，点「获取模型列表」实际请求，失败才红字提示（如需 Key 会提示认证失败），`custom` 自定义厂商手填
 - **流式问答**：`/api/query` SSE 流式输出，回答强制带 `[来源: 文件名]` 引用
@@ -42,7 +43,8 @@
 ├── src/
 │   ├── api/                 # FastAPI 路由与 schema（routes.py, app.py）
 │   ├── ingest/              # 文档加载 / 分块 / 导入管线 / 进度
-│   ├── retrieval/hybrid.py  # 混合检索与文件级去重
+│   ├── retrieval/           # hybrid.py（加权 RRF 混合检索 + 文件级去重）、
+│   │                        # config.py（检索参数运行时配置）
 │   ├── qa/                  # chain（上下文组装+问答）、llm（统一调用）、
 │   │                        # llm_config（档案/密钥）、providers（厂商预设）、cancel（停止）
 │   ├── vectorstore/         # store（写入/集合操作）、embedder、naming
@@ -75,10 +77,20 @@ python3 -m pip install -e ".[dev]"
 | --- | --- | --- |
 | `QDRANT_URL` | `http://localhost:6333` | 本地模式填目录路径（如 `./qdrant_data`），内存模式填 `:memory:`，也可连远程 qdrant server |
 | `QDRANT_COLLECTION` | `knowledge_base` | 当前激活集合（存储名，中文会自动映射为安全文件名） |
-| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `150` | 分块参数 |
+| `CHUNK_SIZE` / `CHUNK_OVERLAP` | `1000` / `150` | 分块参数（重建/新导入生效） |
 | `TOP_K` | `3` | 检索目标：不同的文件数上限 |
 | `CHUNKS_PER_FILE` | `3` | 每个选中文件最多保留的 chunk 数 |
-| `RERANK_TOP_K` / `RRF_K` | `5` / `60` | 预留的粗排参数 |
+| `RERANK_TOP_K` | `0` | 融合后最多交给大模型的 chunk 数（0=不限制） |
+| `RRF_K` | `60` | RRF 融合常数，越大越平滑 |
+| `HYBRID_ENABLED` | `true` | 是否启用 dense+sparse 混合检索 |
+| `DENSE_WEIGHT` / `SPARSE_WEIGHT` | `1.0` / `1.0` | 两路召回在 RRF 中的权重 |
+| `CANDIDATE_MULTIPLIER` / `CANDIDATE_MIN` | `4` / `24` | 每路召回候选池 = `max(TOP_K×倍数, 下限)` |
+| `KEYWORD_BOOST` / `KEYWORD_LIMIT` | `1.1` / `5` | 关键词通道的权重与关键词个数上限（0 关闭该通道） |
+| `MAX_CONTEXT_CHARS` | `4000` | 组装上下文的总字符预算 |
+| `MIN_SCORE` | `0.0` | dense 余弦分下限（0=不过滤） |
+
+> 上表为 **env 默认值**；运行时可在管理面板「检索设置」调整，覆盖值落盘于
+> `qdrant_data/retrieval_config.json` 并即时生效（无需重启）。写入需管理员令牌。
 
 **LLM / Embedding（env 为默认，`qdrant_data/llm_config.json` 覆盖）**
 
@@ -147,8 +159,10 @@ nohup /usr/bin/python3 run_server.py > /tmp/rag_server.log 2>&1 &
 
 | 方法 & 路径 | 说明 |
 | --- | --- |
-| `POST /api/query` | 流式问答（SSE：`{"type":"chunk","text":...}` / 结束时 `{"type":"done","stopped":bool,...}`），body: `{question, top_k?, collection?, session_id?}`；`session_id` 用于定位/取消本次生成 |
+| `POST /api/query` | 流式问答（SSE：`{"type":"chunk","text":...}` / 结束时 `{"type":"done","stopped":bool,...}`），body: `{question, top_k?, chunks_per_file?, collection?, session_id?}`；`session_id` 用于定位/取消本次生成 |
 | `POST /api/query/cancel` | 停止正在生成中的回答，body: `{session_id}`，返回 `{cancelled: bool}`；保留已输出的部分内容 |
+| `POST /api/retrieve` | 仅检索、不调大模型：返回排序后的 chunk 与来源文件，body: `{question, top_k?, chunks_per_file?, collection?}`；供调优与离线评测用，访问范围同 `/api/query` |
+| `GET /api/retrieval/config` · `POST /api/retrieval/config` | 读取 / 更新检索参数（写入需管理员令牌）；body 为任意字段子集，未传字段保持不变 |
 | `POST /api/ingest` | 导入，body: `{path?, paths?, recreate?, delete_missing?}`（阻塞至完成，返回统计） |
 | `GET /api/ingest/progress` / `POST /api/ingest/cancel` | 导入进度 / 取消 |
 | `GET /api/status` / `GET /api/config` | 状态 / 配置 |
@@ -175,12 +189,23 @@ nohup /usr/bin/python3 run_server.py > /tmp/rag_server.log 2>&1 &
 
 ## 检索与问答原理
 
-1. **召回**：`top_k` 目标文件数，候选池扩至 `max(top_k*4, 24)`；
-   密集检索（bge-m3 余弦）+ 关键词匹配（`MatchText`，命中加权 `×1.1`）合并
-2. **文件级去重**：按分数贪心先定 `top_k` 个**不同文件**（每个文件以其最佳 chunk 代表参选）；
-   再从候选里为每个选中文件保留至多 `chunks_per_file` 个高分 chunk
-3. **上下文组装**（`src/qa/chain.py`）：chunk 按分数降序拼入，总字符预算 `MAX_CONTEXT_CHARS=4000` 截断（约 2000 token，防超 `num_ctx=8192`）；`chunks_used` 反映实际喂入数
+1. **召回**（`src/retrieval/hybrid.py`）：每路候选池 `max(top_k×candidate_multiplier, candidate_min)`；
+   - dense 通道：bge-m3 余弦近邻（可加 `min_score` 分数下限）
+   - sparse 通道：FastEmbed BM25 稀疏近邻（集合配置了 sparse 向量时才走）
+   - 关键词通道：`MatchText` 过滤的 dense 查询（旧 dense-only 集合的主要词法来源，`keyword_limit=0` 可关）
+   - 多路结果按**加权 RRF** 融合：`Σ weight / (rrf_k + rank)`
+2. **文件级去重**：按融合分贪心先定 `top_k` 个**不同文件**（每个文件以其最佳 chunk 代表参选）；
+   再从候选里为每个选中文件保留至多 `chunks_per_file` 个 chunk；若 `rerank_top_k>0` 再截断到该数量
+3. **上下文组装**（`src/qa/chain.py`）：chunk 按分数降序拼入，总字符预算 `max_context_chars` 截断（默认 4000，约 2000 token，防超 `num_ctx=8192`）；`chunks_used` 反映实际喂入数
 4. **回答**：仅基于检索到的 chunk 片段回答（不读整文件），`temperature=0`，强制标注 `[来源: 文件名]`
+
+> `POST /api/retrieve` 只跑第 1–2 步（不调大模型），便于快速对比参数效果。
+
+> **中文语料注意**：FastEmbed 的 `Qdrant/bm25` 只支持英文分词，中文整句会被当成**单个 token**，
+> 稀疏通道对中文几乎不生效（实测中文 query 与相关中文文档索引重叠为 0）；`MatchText` 关键词通道
+> 在未建全文索引时同样基本空转。因此**中文库的召回实际由 dense 承担**，混合检索对本项目的中文记忆库
+> 无可见提升（评测见下）。若要让中文也吃到词法召回，需换成多语言学习型稀疏模型
+> （如 `Qdrant/bm42-all-minilm-l6-v2-attentions`）并重建索引；Go/Python 等英文文档则能从 BM25 受益。
 
 ### 停止回答
 
@@ -275,17 +300,27 @@ export RATE_LIMIT_PER_MINUTE=20
 ## 数据与存储
 
 - `data/`：源文档（支持 `.md` / `.txt` / `.pdf`），导入时按目录递归发现
-- `qdrant_data/`：本地 qdrant 持久化（每集合一个 sqlite）、`imports.db`（导入历史/文档哈希）、`collection_aliases.json`（显示名 ↔ 存储名）、`llm_config.json`（模型档案/密钥）、`llm_model.json`（旧版单模型，已兼容迁移）
+- `qdrant_data/`：本地 qdrant 持久化（每集合一个 sqlite）、`imports.db`（导入历史/文档哈希）、`collection_aliases.json`（显示名 ↔ 存储名）、`llm_config.json`（模型档案/密钥）、`retrieval_config.json`（检索参数覆盖值）、`llm_model.json`（旧版单模型，已兼容迁移）
 - PDF 按页切分，chunk 携带 `source`（相对路径）、`filename`、`page`、`chunk_index` 元数据
 
 ## 测试与检查
 
 ```bash
-/usr/bin/python3 -m pytest -q    # 69 passed
-ruff check src/
+pytest -q
+ruff check src tests
 ```
 
 日常修改后建议两者都跑一遍。
+
+### 检索效果评测（不调大模型）
+
+```bash
+python tests/eval_retrieval.py                         # 打 localhost:8000
+python tests/eval_retrieval.py --api https://rag.zxlumen.cn/api --top-k 5
+```
+
+用 `tests/rag_eval.json` 的 `expected_source` 计算 **recall@k**（不同文件）与 **MRR**，
+只调 `/api/retrieve`、不经 LLM，便于对比不同检索参数的前后效果。
 
 ## 已知实现细节
 

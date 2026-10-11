@@ -4,9 +4,9 @@ import logging
 import re
 from dataclasses import dataclass
 
-from src.config import settings
+from src.retrieval import config as retrieval_config
 from src.vectorstore.context import current_collection
-from src.vectorstore.embedder import get_dense_embeddings
+from src.vectorstore.embedder import get_dense_embeddings, get_sparse_embeddings
 from src.vectorstore.store import get_client
 
 logger = logging.getLogger("rag")
@@ -27,24 +27,102 @@ def _extract_keywords(query: str) -> list[str]:
     return keywords
 
 
-def _build_metadata_filter(keywords: list[str]) -> dict | None:
+def _item(point) -> dict:
+    payload = point.payload or {}
+    metadata = payload.get("metadata", {}) or {}
+    return {
+        "id": point.id,
+        "text": payload.get("text", ""),
+        "score": point.score,
+        "source": metadata.get("source", ""),
+        "metadata": metadata,
+    }
+
+
+def _candidate_pool_size(top_k: int, cfg: dict) -> int:
+    return max(top_k * int(cfg["candidate_multiplier"]), int(cfg["candidate_min"]))
+
+
+def _collection_has_sparse(client, collection: str) -> bool:
+    """True only when the collection is configured with a ``sparse`` vector.
+
+    Collections imported before sparse support exist but carry dense-only
+    points, so a sparse prefetch would return nothing; we fall back to the
+    keyword channel for those.
+    """
+    try:
+        params = client.get_collection(collection).config.params
+        return bool(getattr(params, "sparse_vectors", None))
+    except Exception:
+        return False
+
+
+def _dense_channel(client, collection, query_dense, limit, min_score) -> list[dict]:
+    kwargs = {}
+    if min_score and min_score > 0:
+        kwargs["score_threshold"] = float(min_score)
+    res = client.query_points(
+        collection_name=collection,
+        query=query_dense,
+        using="dense",
+        with_payload=True,
+        limit=limit,
+        **kwargs,
+    )
+    return [_item(p) for p in res.points]
+
+
+def _sparse_channel(client, collection, query: str, limit) -> list[dict]:
+    from qdrant_client.models import SparseVector
+
+    sparse = get_sparse_embeddings().embed_query(query)
+    res = client.query_points(
+        collection_name=collection,
+        query=SparseVector(indices=sparse.indices, values=sparse.values),
+        using="sparse",
+        with_payload=True,
+        limit=limit,
+    )
+    return [_item(p) for p in res.points]
+
+
+def _keyword_channel(client, collection, query: str, query_dense, limit) -> list[dict]:
+    """Dense query restricted to chunks matching any query keyword.
+
+    This is the legacy lexical signal, kept as an extra RRF channel so old
+    (dense-only) collections still get some exact-term recall.
+    """
+    keywords = _extract_keywords(query)[: int(retrieval_config.get("keyword_limit"))]
     if not keywords:
-        return None
+        return []
     from qdrant_client.models import FieldCondition, Filter, MatchText
 
-    conditions = []
-    for kw in keywords[:5]:
-        conditions.append(
-            FieldCondition(
-                key="text",
-                match=MatchText(text=kw),
-            )
-        )
-    return Filter(must=conditions)
+    should = [FieldCondition(key="text", match=MatchText(text=kw)) for kw in keywords]
+    res = client.query_points(
+        collection_name=collection,
+        query=query_dense,
+        using="dense",
+        query_filter=Filter(should=should),
+        with_payload=True,
+        limit=limit,
+    )
+    return [_item(p) for p in res.points]
 
 
-def _candidate_pool_size(top_k: int) -> int:
-    return max(top_k * 4, 24)
+def _rrf_fuse(channels: list[list[dict]], k: int, weights: list[float]) -> list[dict]:
+    """Weighted Reciprocal Rank Fusion over several ranked channels."""
+    scores: dict[object, float] = {}
+    items: dict[object, dict] = {}
+    for weight, ranked in zip(weights, channels):
+        if weight <= 0:
+            continue
+        for rank, item in enumerate(ranked):
+            key = item["id"]
+            items.setdefault(key, item)
+            scores[key] = scores.get(key, 0.0) + weight / (k + rank + 1)
+    fused = [{**items[key], "score": score} for key, score in scores.items()]
+    fused.sort(key=lambda x: x["score"], reverse=True)
+    return fused
 
 
 def _select_final_chunks(items: list[dict], top_k: int, chunks_per_file: int) -> list[dict]:
@@ -80,10 +158,15 @@ def _select_final_chunks(items: list[dict], top_k: int, chunks_per_file: int) ->
 
 
 def search(
-    query: str, top_k: int | None = None, collection_name: str | None = None
+    query: str,
+    top_k: int | None = None,
+    collection_name: str | None = None,
+    chunks_per_file: int | None = None,
 ) -> list[RetrievedChunk]:
-    top_k = top_k or settings.top_k
-    chunks_per_file = settings.chunks_per_file
+    cfg = retrieval_config.load()
+    top_k = int(top_k or cfg["top_k"])
+    top_k = max(1, min(100, top_k))
+    chunks_per_file = int(chunks_per_file or cfg["chunks_per_file"])
     collection = collection_name or current_collection()
     client = get_client()
 
@@ -92,78 +175,51 @@ def search(
     if not client.collection_exists(collection):
         return []
 
-    dense_embeddings = get_dense_embeddings()
-    query_dense = dense_embeddings.embed_query(query)
+    query_dense = get_dense_embeddings().embed_query(query)
+    candidate_n = _candidate_pool_size(top_k, cfg)
 
-    candidate_n = _candidate_pool_size(top_k)
+    try:
+        dense_items = _dense_channel(
+            client, collection, query_dense, candidate_n, cfg.get("min_score", 0.0)
+        )
+    except Exception:
+        logger.exception("dense recall failed (collection=%s)", collection)
+        return []
 
-    dense_results = client.query_points(
-        collection_name=collection,
-        query=query_dense,
-        using="dense",
-        with_payload=True,
-        limit=candidate_n,
-    )
+    channels: list[list[dict]] = [dense_items]
+    weights: list[float] = [float(cfg["dense_weight"])]
 
-    dense_items = []
-    for point in dense_results.points:
-        payload = point.payload or {}
-        dense_items.append({
-            "id": point.id,
-            "text": payload.get("text", ""),
-            "score": point.score,
-            "source": (payload.get("metadata", {}) or {}).get("source", ""),
-            "metadata": payload.get("metadata", {}),
-        })
-
-    keywords = _extract_keywords(query)
-    if keywords:
+    if cfg["hybrid_enabled"] and _collection_has_sparse(client, collection):
         try:
-            from qdrant_client.models import FieldCondition, Filter, MatchText
+            sparse_items = _sparse_channel(client, collection, query, candidate_n)
+            if sparse_items:
+                channels.append(sparse_items)
+                weights.append(float(cfg["sparse_weight"]))
+        except Exception:
+            logger.exception("sparse recall failed (collection=%s)", collection)
 
-            should_conditions = []
-            for kw in keywords[:5]:
-                should_conditions.append(
-                    FieldCondition(
-                        key="text",
-                        match=MatchText(text=kw),
-                    )
-                )
-            keyword_filter = Filter(should=should_conditions)
-
-            keyword_results = client.query_points(
-                collection_name=collection,
-                query=query_dense,
-                using="dense",
-                query_filter=keyword_filter,
-                with_payload=True,
-                limit=candidate_n,
+    if int(cfg["keyword_limit"]) > 0:
+        try:
+            keyword_items = _keyword_channel(
+                client, collection, query, query_dense, candidate_n
             )
-
-            seen_ids = {item["id"] for item in dense_items}
-            for point in keyword_results.points:
-                if point.id not in seen_ids:
-                    payload = point.payload or {}
-                    dense_items.append({
-                        "id": point.id,
-                        "text": payload.get("text", ""),
-                        "score": point.score * 1.1,
-                        "source": (payload.get("metadata", {}) or {}).get("source", ""),
-                        "metadata": payload.get("metadata", {}),
-                    })
-                    seen_ids.add(point.id)
+            if keyword_items:
+                channels.append(keyword_items)
+                weights.append(float(cfg["keyword_boost"]))
         except Exception:
             logger.exception("keyword recall failed (collection=%s)", collection)
 
-    items: list[dict] = _select_final_chunks(dense_items, top_k, chunks_per_file)
+    if len(channels) == 1:
+        items = dense_items
+    else:
+        items = _rrf_fuse(channels, int(cfg["rrf_k"]), weights)
 
-    chunks: list[RetrievedChunk] = []
-    for item in items:
-        chunks.append(
-            RetrievedChunk(
-                text=item["text"],
-                score=item["score"],
-                metadata=item["metadata"],
-            )
-        )
-    return chunks
+    items = _select_final_chunks(items, top_k, chunks_per_file)
+    rerank_top_k = int(cfg["rerank_top_k"])
+    if rerank_top_k > 0:
+        items = items[:rerank_top_k]
+
+    return [
+        RetrievedChunk(text=item["text"], score=item["score"], metadata=item["metadata"])
+        for item in items
+    ]

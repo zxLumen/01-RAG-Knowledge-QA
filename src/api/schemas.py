@@ -4,14 +4,33 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
-from src.config import settings
-
 
 class QueryRequest(BaseModel):
     question: str
-    top_k: int = Field(default_factory=lambda: settings.top_k)
+    top_k: Optional[int] = None
+    chunks_per_file: Optional[int] = None
     collection: Optional[str] = None
     session_id: Optional[str] = None
+
+
+class RetrieveRequest(BaseModel):
+    question: str
+    top_k: Optional[int] = None
+    chunks_per_file: Optional[int] = None
+    collection: Optional[str] = None
+
+
+class RetrievedChunkItem(BaseModel):
+    filename: str
+    rel_path: str
+    text: str
+    score: float
+
+
+class RetrieveResponse(BaseModel):
+    chunks: list[RetrievedChunkItem]
+    sources: list[str]
+    count: int
 
 
 class QueryCancelRequest(BaseModel):
@@ -68,7 +87,55 @@ class ConfigResponse(BaseModel):
     chunk_size: int
     chunk_overlap: int
     top_k: int
+    chunks_per_file: int
+    hybrid_enabled: bool
+    rrf_k: int
+    rerank_top_k: int
+    candidate_multiplier: int
+    candidate_min: int
+    dense_weight: float
+    sparse_weight: float
+    keyword_boost: float
+    keyword_limit: int
+    max_context_chars: int
+    min_score: float
     qdrant_url: str
+
+
+class RetrievalConfigResponse(BaseModel):
+    top_k: int
+    chunks_per_file: int
+    rerank_top_k: int
+    rrf_k: int
+    hybrid_enabled: bool
+    dense_weight: float
+    sparse_weight: float
+    candidate_multiplier: int
+    candidate_min: int
+    keyword_boost: float
+    keyword_limit: int
+    max_context_chars: int
+    min_score: float
+    chunk_size: int
+    chunk_overlap: int
+
+
+class RetrievalConfigRequest(BaseModel):
+    top_k: Optional[int] = None
+    chunks_per_file: Optional[int] = None
+    rerank_top_k: Optional[int] = None
+    rrf_k: Optional[int] = None
+    hybrid_enabled: Optional[bool] = None
+    dense_weight: Optional[float] = None
+    sparse_weight: Optional[float] = None
+    candidate_multiplier: Optional[int] = None
+    candidate_min: Optional[int] = None
+    keyword_boost: Optional[float] = None
+    keyword_limit: Optional[int] = None
+    max_context_chars: Optional[int] = None
+    min_score: Optional[float] = None
+    chunk_size: Optional[int] = None
+    chunk_overlap: Optional[int] = None
 
 
 class ModelInfo(BaseModel):

@@ -524,6 +524,22 @@
                         <span x-text="configInfo.top_k || '-'"></span>
                     </div>
                     <div class="flex justify-between py-2 border-b border-gray-700">
+                        <span class="text-gray-400">每文件 chunk 数</span>
+                        <span x-text="configInfo.chunks_per_file ?? '-'"></span>
+                    </div>
+                    <div class="flex justify-between py-2 border-b border-gray-700">
+                        <span class="text-gray-400">混合检索</span>
+                        <span x-text="configInfo.hybrid_enabled ? ('dense ' + (configInfo.dense_weight ?? 1) + ' · sparse ' + (configInfo.sparse_weight ?? 1) + ' · RRF k=' + (configInfo.rrf_k ?? '-')) : '关闭'"></span>
+                    </div>
+                    <div class="flex justify-between py-2 border-b border-gray-700">
+                        <span class="text-gray-400">候选池</span>
+                        <span x-text="'max(TOP_K×' + (configInfo.candidate_multiplier ?? '-') + ', ' + (configInfo.candidate_min ?? '-') + ')'"></span>
+                    </div>
+                    <div class="flex justify-between py-2 border-b border-gray-700">
+                        <span class="text-gray-400">上下文预算</span>
+                        <span x-text="(configInfo.max_context_chars || '-') + ' 字符'"></span>
+                    </div>
+                    <div class="flex justify-between py-2 border-b border-gray-700">
                         <span class="text-gray-400">Qdrant</span>
                         <span class="font-mono text-xs" x-text="configInfo.qdrant_url || '-'"></span>
                     </div>
@@ -747,6 +763,85 @@
                     <button @click="embedForm.open = false" class="btn-ghost text-white px-4 py-2 rounded-lg text-sm">取消</button>
                     <span x-show="embedForm.provider === 'custom'" class="text-xs text-gray-500">自定义厂商请直接手填模型名</span>
                     <span class="text-xs" :class="embedMsg.ok ? 'text-green-400' : 'text-red-400'" x-text="embedMsg.text"></span>
+                </div>
+            </div>
+
+            <!-- 检索设置 -->
+            <div class="glass-card rounded-2xl p-6">
+                <div class="flex items-center justify-between mb-1">
+                    <h2 class="text-lg font-semibold">检索设置</h2>
+                    <label class="flex items-center gap-2 text-xs text-gray-300">
+                        <input type="checkbox" x-model="retrievalConfig.hybrid_enabled">
+                        启用混合检索（dense + BM25 sparse）
+                    </label>
+                </div>
+                <p class="text-xs text-gray-400 mb-4">
+                    保存后即时生效（落盘 qdrant_data/retrieval_config.json）。改动分块参数需到「导入」页「重建」才对新数据生效；
+                    历史集合若未包含 sparse 向量，需重建后混合检索才生效。
+                </p>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">Top K（文件数）</span>
+                        <input x-model.number="retrievalConfig.top_k" type="number" min="1" max="100" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">每文件 chunk 数</span>
+                        <input x-model.number="retrievalConfig.chunks_per_file" type="number" min="1" max="20" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">最终 chunk 上限(0=不限)</span>
+                        <input x-model.number="retrievalConfig.rerank_top_k" type="number" min="0" max="100" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">RRF k</span>
+                        <input x-model.number="retrievalConfig.rrf_k" type="number" min="1" max="1000" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">候选池倍数</span>
+                        <input x-model.number="retrievalConfig.candidate_multiplier" type="number" min="1" max="20" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">候选池下限</span>
+                        <input x-model.number="retrievalConfig.candidate_min" type="number" min="1" max="500" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">dense 权重</span>
+                        <input x-model.number="retrievalConfig.dense_weight" type="number" step="0.1" min="0" max="10" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">sparse 权重</span>
+                        <input x-model.number="retrievalConfig.sparse_weight" type="number" step="0.1" min="0" max="10" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">关键词权重</span>
+                        <input x-model.number="retrievalConfig.keyword_boost" type="number" step="0.1" min="0" max="10" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">关键词个数(0=关)</span>
+                        <input x-model.number="retrievalConfig.keyword_limit" type="number" min="0" max="20" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">上下文预算(字符)</span>
+                        <input x-model.number="retrievalConfig.max_context_chars" type="number" min="500" max="100000" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">dense 分数下限</span>
+                        <input x-model.number="retrievalConfig.min_score" type="number" step="0.05" min="0" max="1" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">Chunk 大小</span>
+                        <input x-model.number="retrievalConfig.chunk_size" type="number" min="100" max="8000" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                    <label class="space-y-1">
+                        <span class="text-gray-400 text-xs">Chunk 重叠</span>
+                        <input x-model.number="retrievalConfig.chunk_overlap" type="number" min="0" max="2000" class="input-field w-full rounded-lg px-3 py-2 text-sm">
+                    </label>
+                </div>
+                <div class="flex items-center gap-3 mt-4">
+                    <button @click="saveRetrievalConfig()" :disabled="retrievalBusy"
+                            class="btn-send disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-medium">保存检索设置</button>
+                    <button @click="loadRetrievalConfig()" class="btn-ghost text-white px-4 py-2 rounded-lg text-sm">还原</button>
+                    <p x-show="retrievalMsg" class="text-xs" :class="retrievalOk ? 'text-green-400' : 'text-red-400'" x-text="retrievalMsg"></p>
                 </div>
             </div>
 
@@ -1141,6 +1236,10 @@ function app() {
 
         statusInfo: {},
         configInfo: {},
+        retrievalConfig: {},
+        retrievalBusy: false,
+        retrievalMsg: '',
+        retrievalOk: true,
         versionInfo: {},
         llmModels: [],
         modelBusy: false,
@@ -1186,7 +1285,7 @@ function app() {
             await this.verifyStoredAdmin();
             await this.loadCollections();
             this.restoreFsExpand();
-            await Promise.all([this.loadStatus(), this.loadConfig(), this.loadVersion(), this.loadLLMConfig(), this.loadProviders(), this.loadFiles(), this.loadImports(), this.loadUiConfig(), this.loadShareConfig()]);
+            await Promise.all([this.loadStatus(), this.loadConfig(), this.loadRetrievalConfig(), this.loadVersion(), this.loadLLMConfig(), this.loadProviders(), this.loadFiles(), this.loadImports(), this.loadUiConfig(), this.loadShareConfig()]);
             await this.loadChatSessions();
             await this.resumeIngestIfRunning();
             if (this.restoringImport) {
@@ -1220,7 +1319,7 @@ function app() {
             this.activeTab = tab;
             if (tab === 'imports') this.loadImports();
             if (tab === 'manage') this.loadCollections();
-            if (tab === 'models') { this.loadLLMConfig(); this.loadProviders(); if (this.isAdmin) this.loadChatAdmin(); }
+            if (tab === 'models') { this.loadLLMConfig(); this.loadProviders(); this.loadRetrievalConfig(); if (this.isAdmin) this.loadChatAdmin(); }
         },
 
         async changePassword() {
@@ -2481,6 +2580,34 @@ function app() {
                 this.uiOk = false; this.uiMsg = '请求失败: ' + e.message;
             } finally {
                 this.uiBusy = false;
+            }
+        },
+
+        async loadRetrievalConfig() {
+            try {
+                const res = await fetch('/api/retrieval/config', { cache: 'no-store' });
+                if (res.ok) this.retrievalConfig = await res.json();
+            } catch {}
+        },
+
+        async saveRetrievalConfig() {
+            this.retrievalMsg = '';
+            this.retrievalBusy = true;
+            try {
+                const res = await fetch('/api/retrieval/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', ...this.authHeaders() },
+                    body: JSON.stringify(this.retrievalConfig),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) { this.retrievalOk = false; this.retrievalMsg = data.detail || '保存失败'; return; }
+                this.retrievalConfig = data;
+                this.retrievalOk = true; this.retrievalMsg = '已保存并即时生效';
+                await this.loadConfig();
+            } catch (e) {
+                this.retrievalOk = false; this.retrievalMsg = '请求失败: ' + e.message;
+            } finally {
+                this.retrievalBusy = false;
             }
         },
 

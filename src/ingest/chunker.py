@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from src.config import settings
 from src.ingest.loader import LoadedDocument
+from src.retrieval import config as retrieval_config
 
 
 def split_documents(
@@ -11,8 +11,9 @@ def split_documents(
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
 ) -> list[dict]:
-    chunk_size = chunk_size or settings.chunk_size
-    chunk_overlap = chunk_overlap or settings.chunk_overlap
+    default_size, default_overlap = retrieval_config.chunk_settings()
+    chunk_size = chunk_size or default_size
+    chunk_overlap = chunk_overlap or default_overlap
 
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,

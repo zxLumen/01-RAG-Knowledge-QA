@@ -13,6 +13,7 @@ from src.ingest import progress as ingest_progress
 from src.ingest.chunker import split_documents
 from src.ingest.loader import SUPPORTED_EXTENSIONS, load_directory, load_file
 from src.qa.llm_config import get_embedding
+from src.retrieval import config as retrieval_config
 from src.vectorstore.context import current_collection, reset_collection, set_collection
 from src.vectorstore.embedder import get_dense_embeddings, get_sparse_embeddings
 from src.vectorstore.store import (
@@ -30,6 +31,12 @@ from src.vectorstore.store import (
 # Chunks per embed+upsert flush. Large imports are streamed through this window
 # so peak memory does not scale with the collection size.
 INGEST_BATCH_SIZE = 128
+
+
+def _chunk_args() -> dict:
+    """Chunk parameters in effect for this import (runtime-tunable)."""
+    size, overlap = retrieval_config.chunk_settings()
+    return {"chunk_size": size, "chunk_overlap": overlap}
 
 
 def _record_session(
@@ -50,8 +57,7 @@ def _record_session(
         error=error,
         duration_ms=int((time.monotonic() - started) * 1000),
         embedding_model=get_embedding().get('model') or settings.dense_embedding_model,
-        chunk_size=settings.chunk_size,
-        chunk_overlap=settings.chunk_overlap,
+        **_chunk_args(),
         collection=current_collection(),
     )
 
@@ -249,8 +255,7 @@ def _ingest_paths(
                 status="ok",
                 duration_ms=int((time.monotonic() - started) * 1000),
                 embedding_model=get_embedding().get('model') or settings.dense_embedding_model,
-                chunk_size=settings.chunk_size,
-                chunk_overlap=settings.chunk_overlap,
+                **_chunk_args(),
                 collection=logical,
             )
             add_files(session_id, files)

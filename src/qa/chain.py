@@ -3,9 +3,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Generator
 
-from src.config import settings
 from src.qa import cancel, llm
 from src.qa.llm_config import get_active
+from src.retrieval import config as retrieval_config
 from src.retrieval.hybrid import RetrievedChunk, search
 
 logger = logging.getLogger("rag")
@@ -20,13 +20,10 @@ SYSTEM_PROMPT = """你是一个知识库问答助手。基于以下检索到的�
 5. 回答简洁准确，先直接给出答案"""
 
 
-MAX_CONTEXT_CHARS = 4000
-
-
 def _build_context(chunks: list[RetrievedChunk]) -> tuple[list[str], str]:
     context_parts = []
     sources = []
-    budget = MAX_CONTEXT_CHARS
+    budget = int(retrieval_config.get("max_context_chars"))
     for chunk in chunks:
         filename = chunk.metadata.get("filename", "unknown")
         page = chunk.metadata.get("page")
@@ -62,9 +59,17 @@ def _chunk_details(chunks: list[RetrievedChunk]) -> list[dict]:
 
 
 def answer_question(
-    question: str, top_k: int | None = None, collection_name: str | None = None
+    question: str,
+    top_k: int | None = None,
+    collection_name: str | None = None,
+    chunks_per_file: int | None = None,
 ) -> dict:
-    chunks = search(question, top_k=top_k or settings.top_k, collection_name=collection_name)
+    chunks = search(
+        question,
+        top_k=top_k,
+        collection_name=collection_name,
+        chunks_per_file=chunks_per_file,
+    )
     if not chunks:
         return {
             "answer": "知识库中没有找到相关文档。",
@@ -91,10 +96,14 @@ def answer_question_stream(
     top_k: int | None = None,
     collection_name: str | None = None,
     gen_id: str | None = None,
+    chunks_per_file: int | None = None,
 ) -> Generator[dict, None, None]:
     try:
         chunks = search(
-            question, top_k=top_k or settings.top_k, collection_name=collection_name
+            question,
+            top_k=top_k,
+            collection_name=collection_name,
+            chunks_per_file=chunks_per_file,
         )
     except Exception as exc:  # noqa: BLE001 - surfaced to the client below
         logger.exception("retrieval failed (collection=%s)", collection_name)

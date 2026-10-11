@@ -43,6 +43,11 @@ from src.api.schemas import (
     ProvidersResponse,
     QueryCancelRequest,
     QueryRequest,
+    RetrievalConfigRequest,
+    RetrievalConfigResponse,
+    RetrievedChunkItem,
+    RetrieveRequest,
+    RetrieveResponse,
     ShareConfigRequest,
     ShareConfigResponse,
     StatusResponse,
@@ -67,6 +72,8 @@ from src.qa import cancel as generation_cancel
 from src.qa import llm as llm_client
 from src.qa import llm_config, providers
 from src.qa.chain import answer_question_stream
+from src.retrieval import config as retrieval_config
+from src.retrieval.hybrid import search as retrieval_search
 from src.vectorstore import active as active_collection
 from src.vectorstore.naming import (
     delete_alias,
@@ -289,6 +296,24 @@ def visitor_read_collection(request: Request, response: Response) -> str | None:
     return visitor.collection_name(vid)
 
 
+def _resolve_query_collection(
+    name: Optional[str], request: Request, response: Response
+) -> str:
+    """Collection to read for a query/retrieve request.
+
+    Visitors read their own collection by default, or an admin-shared one
+    (read-only, selectable by display name). Admins read the active collection.
+    """
+    visitor_scope = visitor_collection(request, response)
+    if visitor_scope:
+        if name and name in share_config.shared_collections():
+            return storage_for_display(name)
+        return visitor_scope
+    if name:
+        return storage_for_display(name)
+    return settings.qdrant_collection
+
+
 @router.post("/query")
 async def query(
     req: QueryRequest,
@@ -296,18 +321,7 @@ async def query(
     response: Response,
     _rate: None = Depends(enforce_rate_limit),
 ):
-    visitor_scope = visitor_collection(request, response)
-    if visitor_scope:
-        # Visitor: their own collection by default; admin-shared collections are
-        # read-only and selectable by display name.
-        if req.collection and req.collection in share_config.shared_collections():
-            collection = storage_for_display(req.collection)
-        else:
-            collection = visitor_scope
-    elif req.collection:
-        collection = storage_for_display(req.collection)
-    else:
-        collection = settings.qdrant_collection
+    collection = _resolve_query_collection(req.collection, request, response)
 
     def event_stream():
         for event in answer_question_stream(
@@ -315,10 +329,57 @@ async def query(
             top_k=req.top_k,
             collection_name=collection,
             gen_id=req.session_id,
+            chunks_per_file=req.chunks_per_file,
         ):
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.post("/retrieve", response_model=RetrieveResponse)
+async def retrieve(
+    req: RetrieveRequest,
+    request: Request,
+    response: Response,
+    _rate: None = Depends(enforce_rate_limit),
+):
+    """Retrieval-only endpoint (no LLM): ranked chunks for a question.
+
+    Useful for tuning and offline evaluation; scoped like ``/api/query``.
+    """
+    collection = _resolve_query_collection(req.collection, request, response)
+    chunks = await run_in_threadpool(
+        retrieval_search,
+        req.question,
+        top_k=req.top_k,
+        collection_name=collection,
+        chunks_per_file=req.chunks_per_file,
+    )
+    items = [
+        RetrievedChunkItem(
+            filename=c.metadata.get("filename", "unknown"),
+            rel_path=c.metadata.get("rel_path") or c.metadata.get("source", ""),
+            text=c.text,
+            score=round(c.score, 6),
+        )
+        for c in chunks
+    ]
+    sources = list(dict.fromkeys(i.filename for i in items))
+    return RetrieveResponse(chunks=items, sources=sources, count=len(items))
+
+
+@router.get("/retrieval/config", response_model=RetrievalConfigResponse)
+async def retrieval_config_get(response: Response):
+    response.headers["Cache-Control"] = "no-store"
+    return RetrievalConfigResponse(**retrieval_config.load())
+
+
+@router.post("/retrieval/config", response_model=RetrievalConfigResponse)
+async def retrieval_config_set(
+    req: RetrievalConfigRequest, _admin: None = Depends(require_admin)
+):
+    cfg = retrieval_config.save(req.model_dump(exclude_none=True))
+    return RetrievalConfigResponse(**cfg)
 
 
 @router.post("/query/cancel")
@@ -577,6 +638,7 @@ async def share_config_set(
 async def config():
     active = llm_config.get_active()
     emb = llm_config.get_embedding()
+    rc = retrieval_config.load()
     return ConfigResponse(
         embedding_model=emb.get("model", settings.dense_embedding_model),
         embedding_provider=emb.get("provider", "ollama"),
@@ -585,9 +647,21 @@ async def config():
         llm_provider=active.get("provider", ""),
         llm_protocol=active.get("protocol", ""),
         llm_base_url=active.get("base_url", ""),
-        chunk_size=settings.chunk_size,
-        chunk_overlap=settings.chunk_overlap,
-        top_k=settings.top_k,
+        chunk_size=rc["chunk_size"],
+        chunk_overlap=rc["chunk_overlap"],
+        top_k=rc["top_k"],
+        chunks_per_file=rc["chunks_per_file"],
+        hybrid_enabled=rc["hybrid_enabled"],
+        rrf_k=rc["rrf_k"],
+        rerank_top_k=rc["rerank_top_k"],
+        candidate_multiplier=rc["candidate_multiplier"],
+        candidate_min=rc["candidate_min"],
+        dense_weight=rc["dense_weight"],
+        sparse_weight=rc["sparse_weight"],
+        keyword_boost=rc["keyword_boost"],
+        keyword_limit=rc["keyword_limit"],
+        max_context_chars=rc["max_context_chars"],
+        min_score=rc["min_score"],
         qdrant_url=settings.qdrant_url,
     )
 
