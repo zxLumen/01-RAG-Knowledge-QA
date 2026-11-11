@@ -1,3 +1,7 @@
+© 2026 刘子祥 · 原创作品，转载请注明出处
+
+> **定位**：本地知识库检索问答（RAG）：混合检索 + Qdrant，可一键切换云端 API。 使用许可见 [LICENSE](./LICENSE)。
+
 # RAG Knowledge QA
 
 本地运行的知识库检索问答应用（RAG）。默认全部能力本地闭环：dense + sparse 混合向量、Qdrant（本地持久化）存储与检索、Ollama 提供大模型推理。**也可一键切换到云端 API**（OpenAI 兼容 / 嵌入 API），便于部署成公开 demo。
